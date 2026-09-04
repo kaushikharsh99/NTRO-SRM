@@ -125,10 +125,26 @@ $VENV_PIP install -r requirements.txt --quiet
 $VENV_PIP install -e . --quiet
 
 # Ensure third-party modules are initialized
-if [ ! -d "third_party/SEN2SR/sen2sr" ] && [ ! -f "third_party/SEN2SR/setup.py" ]; then
-    echo "      Cloning third-party ESAOpenSR SEN2SR dependency..."
-    mkdir -p third_party
-    git clone --depth 1 https://github.com/ESAOpenSR/SEN2SR.git third_party/SEN2SR 2>/dev/null || true
+echo "      Configuring third-party ESAOpenSR SEN2SR dependency..."
+mkdir -p third_party
+
+# If in a git repository and submodule is not yet checked out, initialize it
+if [ -d ".git" ] && [ ! -d "third_party/SEN2SR/sen2sr" ]; then
+    echo "      Initializing git submodule third_party/SEN2SR..."
+    git submodule update --init --recursive third_party/SEN2SR 2>/dev/null || true
+fi
+
+# Fallback: if third_party/SEN2SR is still missing (e.g. downloaded as ZIP archive without .git)
+if [ ! -d "third_party/SEN2SR/sen2sr" ]; then
+    echo "      Cloning third-party ESAOpenSR SEN2SR repository..."
+    rm -rf third_party/SEN2SR
+    git clone --depth 1 https://github.com/ESAOpenSR/SEN2SR.git third_party/SEN2SR
+fi
+
+# Install SEN2SR into virtual environment in editable mode
+if [ -d "third_party/SEN2SR" ]; then
+    echo "      Installing SEN2SR package into virtual environment..."
+    $VENV_PIP install -e third_party/SEN2SR --no-deps --quiet
 fi
 
 # Create required directories
