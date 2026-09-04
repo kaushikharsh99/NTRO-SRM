@@ -201,13 +201,13 @@ NTRO-SRM/
 │   ├── utils/                # Affine transform & GeoTIFF utilities
 │   └── web/                  # FastAPI router, schemas, & STAC services
 ├── tests/                    # Complete pytest suite (26 passing tests)
-├── third_party/              # Upstream ESAOpenSR repositories (100% untouched)
+├── third_party/              # Upstream ESAOpenSR SEN2SR repository (100% untouched)
 ├── web/
 │   ├── static/               # CSS, JavaScript, icons, Leaflet assets
 │   └── templates/            # index.html GIS interface
 ├── .env.example              # Template Copernicus CDSE credentials
 ├── .gitignore                # Git ignore configuration
-├── .gitmodules               # Submodule specifications for third_party
+├── .gitmodules               # Submodule specification for ESAOpenSR/SEN2SR
 ├── INSTALL.md                # Comprehensive installation manual
 ├── LICENSE                   # MIT License
 ├── MANIFEST.in               # Packaging manifest
