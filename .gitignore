@@ -1,0 +1,63 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+
+# Pytest / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local checkpoints & caches (large safetensors downloaded via setup.sh)
+checkpoints/*
+!checkpoints/.gitkeep
+datasets/cache/*
+!datasets/cache/.gitkeep
+outputs/*
+!outputs/.gitkeep
+!outputs/comparisons/
+outputs/web_jobs/*
+outputs/uploads/*
+experiments/*
+!experiments/.gitkeep
+
+# Whitelist sample datasets
+!datasets/sample_s2/
+!datasets/sample_s2/*
+
+# IDEs & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Temporary artifacts (except sample dataset)
+temp/
+*.cog
+outputs/**/*.tif

@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include requirements.txt
+include pyproject.toml
+include setup.py
+include .env.example
+recursive-include web/templates *
+recursive-include web/static *
+recursive-include configs *
+recursive-include datasets/sample_s2 *.tif

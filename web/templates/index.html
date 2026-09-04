@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NTRO-SRM — Sentinel-2 Multi-Spectral Super-Resolution Mapping</title>
+    
+    <!-- Local Leaflet Assets -->
+    <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+    <script src="/static/vendor/leaflet/leaflet.js"></script>
+    
+    <!-- Modern GIS Typography -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <!-- Application Styling -->
+    <link rel="stylesheet" href="/static/css/app.css?v=3.3">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Top Navigation / Status Header -->
+        <header class="app-header">
+            <div class="header-left">
+                <div class="app-logo">
+                    <div class="logo-mark">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    </div>
+                    <div>
+                        <div class="logo-title-row">
+                            <span class="logo-title">NTRO-SRM</span>
+                            <span class="logo-pill">10m &rarr; 2.5m GSD</span>
+                        </div>
+                        <div class="logo-sub">Sentinel-2 Multi-Spectral Super-Resolution Mapping (4&times;)</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="header-center">
+                <!-- Hardware & Pipeline Status Chips -->
+                <div class="status-chip">
+                    <span class="status-indicator {% if sys_info.cuda_available %}indicator-active{% else %}indicator-warn{% endif %}"></span>
+                    <span class="chip-label">GPU:</span>
+                    <span class="chip-val">{{ sys_info.device_name }}</span>
+                    <span class="chip-badge">{% if sys_info.cuda_available %}CUDA READY{% else %}CPU{% endif %}</span>
+                </div>
+
+                <div class="status-chip">
+                    <span class="status-indicator indicator-active"></span>
+                    <span class="chip-label">Model:</span>
+                    <span class="chip-val">{{ sys_info.model_variant }}</span>
+                    <span class="chip-badge badge-blue">10 BANDS</span>
+                </div>
+
+                <div class="status-chip">
+                    <span class="status-indicator {% if sys_info.cdse_configured %}indicator-active{% else %}indicator-warn{% endif %}"></span>
+                    <span class="chip-label">Catalog:</span>
+                    <span class="chip-val">{% if sys_info.cdse_configured %}Copernicus CDSE{% else %}AWS STAC{% endif %}</span>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <button id="btn-load-demo" class="btn btn-secondary" title="Load pre-downloaded Mountain Lake Sentinel-2 sample scene">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                    Load Sample Scene
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace: Map + Control Sidebar -->
+        <main class="app-main">
+            <!-- Left / Center: Interactive Leaflet Map Viewport -->
+            <div class="map-viewport" id="map-viewport">
+                <div id="map" class="map-element"></div>
+
+                <!-- Active Drawing Banner Indicator -->
+                <div id="draw-banner" class="draw-banner hidden">
+                    <div class="draw-banner-content">
+                        <span class="pulse-dot"></span>
+                        <span><strong>Draw Mode Active:</strong> Click and drag on the map to define a target area</span>
+                        <button id="btn-cancel-draw" class="btn btn-xs btn-outline-light">Done / Cancel</button>
+                    </div>
+                </div>
+
+                <!-- Interactive Comparison Split Slider -->
+                <div id="slider-container" class="slider-container hidden">
+                    <div id="slider-divider" class="slider-divider">
+                        <div class="slider-handle">
+                            <span class="slider-arrow left">&ltrif;</span>
+                            <span class="slider-label">SWIPE</span>
+                            <span class="slider-arrow right">&rtrif;</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Top Left & Right Overlay Labels for Before/After -->
+                <div id="compare-labels" class="compare-labels hidden">
+                    <div class="label-box label-left">
+                        <span id="label-left-text">Original Sentinel-2 (10.0m Native)</span>
+                    </div>
+                    <div class="label-box label-right">
+                        <span id="label-right-text">SEN2SR-Lite (2.50m Neural SR)</span>
+                    </div>
+                </div>
+
+                <!-- Floating Top Controls: Color Mode & Views -->
+                <div class="map-floating-controls">
+                    <div class="control-group">
+                        <span class="control-group-title">Color Mode:</span>
+                        <button id="btn-mode-rgb" class="btn-toggle active" data-mode="rgb" title="True Color (B04-Red, B03-Green, B02-Blue)">Natural RGB</button>
+                        <button id="btn-mode-cir" class="btn-toggle" data-mode="cir" title="Color Infrared (B08-NIR, B04-Red, B03-Green)">Infrared (CIR)</button>
+                    </div>
+                    <div class="control-group" id="view-mode-group" style="display: none;">
+                        <span class="control-group-title">View:</span>
+                        <button id="btn-view-split" class="btn-toggle active" title="Interactive split swipe comparison">Swipe Split</button>
+                        <button id="btn-view-lr" class="btn-toggle" title="Show 10m Native Sentinel-2 Only">10m Native</button>
+                        <button id="btn-view-sr" class="btn-toggle" title="Show 2.5m Super-Resolved Only">2.5m SR</button>
+                        <button id="btn-view-blend" class="btn-toggle" title="Continuous opacity blend between 10m and 2.5m">Blend</button>
+                    </div>
+                    <div class="control-group" id="blend-slider-group" style="display: none; align-items: center; gap: 6px;">
+                        <span class="control-group-title" style="font-size: 11px;">SR Opacity:</span>
+                        <input type="range" id="sr-opacity-slider" min="0" max="100" value="100" class="mini-range">
+                        <span id="sr-opacity-val" style="font-size: 11px; color: var(--primary-600); font-weight: 700; width: 36px;">100%</span>
+                    </div>
+                    <div class="control-group" id="comparison-toggle-group" style="display: none;">
+                        <span class="control-group-title">Left Side:</span>
+                        <select id="select-left-layer" class="select-sm">
+                            <option value="lr" selected>Native 10m S2</option>
+                            <option value="bicubic">Bicubic 2.5m Baseline</option>
+                        </select>
+                        <button id="btn-zoom-patch" class="btn-toggle btn-icon-text" title="Center map directly onto the loaded patch">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                            Zoom to Patch
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Floating Quick Locations Bar (Directly over the map for instant access) -->
+                <div class="map-floating-locations">
+                    <span class="location-group-title">📍 Quick Locations:</span>
+                    <button type="button" class="preset-chip active" data-lat="37.4255" data-lon="-80.5723" data-name="Mountain Lake (Forest/Lake)">
+                        🌲 Mountain Lake
+                    </button>
+                    <button type="button" class="preset-chip" data-lat="36.6777" data-lon="-121.6555" data-name="Salinas Valley (Farmland)">
+                        🌾 Salinas Farms
+                    </button>
+                    <button type="button" class="preset-chip" data-lat="50.0379" data-lon="8.5622" data-name="Frankfurt (Airport/City)">
+                        🏙️ Frankfurt
+                    </button>
+                    <button type="button" class="preset-chip" data-lat="51.9244" data-lon="4.4777" data-name="Rotterdam (Port/Harbor)">
+                        ⚓ Rotterdam
+                    </button>
+                    <button type="button" class="preset-chip" data-lat="25.1124" data-lon="55.1390" data-name="Dubai (Palm/Coast)">
+                        🏖️ Dubai Palm
+                    </button>
+                    <button type="button" class="preset-chip" data-lat="39.0968" data-lon="-120.0324" data-name="Lake Tahoe (Alpine Lake)">
+                        🏔️ Lake Tahoe
+                    </button>
+                </div>
+
+                <!-- Bottom Status Bar for Mouse Coords -->
+                <div class="map-status-bar">
+                    <span id="coord-display">Lat: --.----, Lon: --.---- &bull; Zoom: --</span>
+                    <span id="aoi-display-status">Ready &bull; Click "Draw Box" or select a quick location to upscale</span>
+                </div>
+            </div>
+
+            <!-- Right: Sleek Control & Analysis Panel -->
+            <aside class="sidebar-panel">
+                <!-- Navigation Tabs: Select Patch | Upload GeoTIFF | STAC Catalog -->
+                <div class="sidebar-tabs">
+                    <button class="tab-btn active" data-tab="tab-select" id="tab-btn-select">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="12" cy="12" r="3"></circle></svg>
+                        <span>1. Select AOI</span>
+                    </button>
+                    <button class="tab-btn" data-tab="tab-upload" id="tab-btn-upload">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                        <span>2. Upload GeoTIFF</span>
+                    </button>
+                    <button class="tab-btn" data-tab="tab-catalog" id="tab-btn-catalog">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        <span>3. S2 Catalog</span>
+                    </button>
+                </div>
+
+                <!-- Tab 1: Patch Selection & Tools -->
+                <div id="tab-select" class="tab-content active">
+                    <div class="sidebar-card">
+                        <div class="card-header">
+                            <span class="card-title-text">Area of Interest (AOI)</span>
+                            <span id="aoi-badge" class="badge badge-gray">No Patch Selected</span>
+                        </div>
+                        <div class="card-body">
+                            <!-- Quick Action Buttons -->
+                            <div class="quick-action-grid">
+                                <button id="btn-draw-aoi" type="button" class="btn btn-primary btn-draw">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                                    Draw Box
+                                </button>
+                                <button id="btn-center-patch" type="button" class="btn btn-secondary">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+                                    Center Box
+                                </button>
+                                <button id="btn-clear-aoi" type="button" class="btn btn-ghost" title="Clear Area">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
+                                    Clear
+                                </button>
+                            </div>
+
+                            <!-- Preset Locations Bar -->
+                            <div class="presets-section">
+                                <span class="section-label">Quick Location Presets:</span>
+                                <div class="preset-chips">
+                                    <button type="button" class="preset-chip active" data-lat="37.4255" data-lon="-80.5723" data-name="Mountain Lake (Forest/Lake)">
+                                        🌲 Mountain Lake
+                                    </button>
+                                    <button type="button" class="preset-chip" data-lat="36.6777" data-lon="-121.6555" data-name="Salinas Valley (Farmland)">
+                                        🌾 Salinas Farms
+                                    </button>
+                                    <button type="button" class="preset-chip" data-lat="50.0379" data-lon="8.5622" data-name="Frankfurt (Airport/City)">
+                                        🏙️ Frankfurt
+                                    </button>
+                                    <button type="button" class="preset-chip" data-lat="51.9244" data-lon="4.4777" data-name="Rotterdam (Port/Harbor)">
+                                        ⚓ Rotterdam
+                                    </button>
+                                    <button type="button" class="preset-chip" data-lat="25.1124" data-lon="55.1390" data-name="Dubai (Palm/Coast)">
+                                        🏖️ Dubai Palm
+                                    </button>
+                                    <button type="button" class="preset-chip" data-lat="39.0968" data-lon="-120.0324" data-name="Lake Tahoe (Alpine Lake)">
+                                        🏔️ Lake Tahoe
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Patch Geometry Metrics -->
+                            <div class="aoi-meta-grid">
+                                <div class="meta-item">
+                                    <span class="meta-label">Center:</span>
+                                    <span id="aoi-center" class="meta-val">--</span>
+                                </div>
+                                <div class="meta-item">
+                                    <span class="meta-label">Ground Span:</span>
+                                    <span id="aoi-dims" class="meta-val">--</span>
+                                </div>
+                                <div class="meta-item">
+                                    <span class="meta-label">Input Grid (10m):</span>
+                                    <span id="aoi-pixels" class="meta-val">--</span>
+                                </div>
+                                <div class="meta-item">
+                                    <span class="meta-label">Output Grid (2.5m):</span>
+                                    <span id="aoi-sr-pixels" class="meta-val highlight">--</span>
+                                </div>
+                            </div>
+
+                            <div id="aoi-warning" class="alert alert-warning hidden">
+                                Selected area exceeds 512&times;512 pixels limit. Please draw a smaller region (~5 km max).
+                            </div>
+
+                            <!-- Manual Coordinate Accordion -->
+                            <details class="coord-details">
+                                <summary class="coord-summary">Manual Coordinates (WGS84)</summary>
+                                <div class="coord-inputs-grid">
+                                    <div class="form-group">
+                                        <label>Min Lon (West):</label>
+                                        <input type="number" step="0.001" id="coord-min-lon" class="form-control" placeholder="-80.59">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Min Lat (South):</label>
+                                        <input type="number" step="0.001" id="coord-min-lat" class="form-control" placeholder="37.41">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Max Lon (East):</label>
+                                        <input type="number" step="0.001" id="coord-max-lon" class="form-control" placeholder="-80.55">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Max Lat (North):</label>
+                                        <input type="number" step="0.001" id="coord-max-lat" class="form-control" placeholder="37.44">
+                                    </div>
+                                </div>
+                                <button id="btn-apply-coords" type="button" class="btn btn-secondary btn-sm btn-block mt-2">Apply Coordinates</button>
+                            </details>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Upload GeoTIFF Patch -->
+                <div id="tab-upload" class="tab-content">
+                    <div class="sidebar-card">
+                        <div class="card-header">
+                            <span class="card-title-text">Direct GeoTIFF Upload</span>
+                            <span class="badge badge-blue">Local File</span>
+                        </div>
+                        <div class="card-body">
+                            <!-- Drag and Drop Dropzone -->
+                            <div id="upload-dropzone" class="upload-dropzone">
+                                <input type="file" id="file-upload-input" accept=".tif,.tiff" class="file-hidden-input">
+                                <div class="dropzone-inner">
+                                    <div class="upload-icon-circle">
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                    </div>
+                                    <div class="dropzone-text-primary">Drag &amp; drop your GeoTIFF here</div>
+                                    <div class="dropzone-text-sub">or click to browse from disk</div>
+                                    <div class="dropzone-specs">Supports 10-band, 12-band, 4-band RGBN, or 3-band RGB (.tif) up to 512&times;512 px</div>
+                                </div>
+                            </div>
+
+                            <!-- Uploaded File Summary (when selected) -->
+                            <div id="upload-file-card" class="upload-file-card hidden">
+                                <div class="file-info-row">
+                                    <span class="file-name" id="upload-filename">sample.tif</span>
+                                    <span class="badge badge-success">Ready</span>
+                                </div>
+                                <div class="file-meta-grid">
+                                    <div><span class="text-muted">Size:</span> <span id="upload-file-size">--</span></div>
+                                    <div><span class="text-muted">Dimensions:</span> <span id="upload-file-dims">--</span></div>
+                                    <div><span class="text-muted">Bands:</span> <span id="upload-file-bands">--</span></div>
+                                    <div><span class="text-muted">CRS:</span> <span id="upload-file-crs">--</span></div>
+                                </div>
+                                <button id="btn-run-upload-sr" type="button" class="btn btn-accent btn-block mt-2">
+                                    ⚡ Upscale Uploaded Image
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Sentinel-2 STAC Catalog (Optional Search) -->
+                <div id="tab-catalog" class="tab-content">
+                    <div class="sidebar-card">
+                        <div class="card-header">
+                            <span class="card-title-text">Sentinel-2 L2A Catalog</span>
+                            {% if sys_info.cdse_configured %}
+                            <span class="badge badge-success">Copernicus CDSE</span>
+                            {% else %}
+                            <span class="badge badge-blue">AWS STAC</span>
+                            {% endif %}
+                        </div>
+                        <div class="card-body">
+                            <div class="form-row">
+                                <div class="form-group flex-1">
+                                    <label for="date-from">From:</label>
+                                    <input type="date" id="date-from" value="2023-01-01" class="form-control">
+                                </div>
+                                <div class="form-group flex-1">
+                                    <label for="date-to">To:</label>
+                                    <input type="date" id="date-to" value="2024-12-31" class="form-control">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <div class="slider-header">
+                                    <label for="cloud-cover">Max Cloud Cover:</label>
+                                    <span id="cloud-val">20%</span>
+                                </div>
+                                <input type="range" id="cloud-cover" min="0" max="100" value="20" class="range-slider">
+                            </div>
+                            <button id="btn-search-scenes" type="button" class="btn btn-secondary btn-block">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                                Search Catalog
+                            </button>
+
+                            <!-- Discovered Scenes -->
+                            <div id="search-results-container" class="search-results-container">
+                                <div id="search-placeholder" class="text-muted text-center py-2">
+                                    Click Search to discover recent cloud-free scenes.
+                                </div>
+                                <div id="search-loading" class="spinner-container hidden">
+                                    <div class="spinner"></div>
+                                    <span>Searching Sentinel-2 catalog...</span>
+                                </div>
+                                <ul id="scenes-list" class="scenes-list hidden"></ul>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Selected Scene Status Indicator -->
+                <div id="selected-scene-card" class="selected-scene-card hidden">
+                    <div class="scene-status-row">
+                        <span class="scene-status-label">Active Scene:</span>
+                        <span class="selected-scene-title" id="selected-scene-id">Auto-Fetch Latest</span>
+                    </div>
+                    <div class="selected-scene-meta" id="selected-scene-meta">Automatic cloud-free acquisition</div>
+                </div>
+
+                <!-- Model Selector Card -->
+                <div class="sidebar-card model-selector-card">
+                    <div class="card-header">
+                        <span class="card-title-text">Super-Resolution Model</span>
+                        <span class="badge badge-accent">10 Bands &bull; 4&times;</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="model-option-group">
+                            <label class="model-option-card active" for="model-radio-lite" id="label-model-lite">
+                                <input type="radio" name="sr-model" id="model-radio-lite" value="lite" checked>
+                                <div class="model-option-content">
+                                    <div class="model-name-row">
+                                        <span class="model-title">SEN2SR-Lite</span>
+                                        <span class="badge badge-gray">Fast Baseline</span>
+                                    </div>
+                                    <div class="model-desc">
+                                        Fast baseline CNN (~0.47M parameters) &bull; Rapid inference
+                                    </div>
+                                </div>
+                            </label>
+
+                            <label class="model-option-card" for="model-radio-swin" id="label-model-swin">
+                                <input type="radio" name="sr-model" id="model-radio-swin" value="swin2sr">
+                                <div class="model-option-content">
+                                    <div class="model-name-row">
+                                        <span class="model-title">SEN2SR-Swin2SR</span>
+                                        <span class="badge badge-blue">Higher-Capacity</span>
+                                    </div>
+                                    <div class="model-desc">
+                                        Higher-capacity model (~12.9M parameters, Vision Transformer + MambaSR)
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Primary Call to Action: Upscale Button -->
+                <div class="upscale-action-card" id="upscale-action-card">
+                    <button id="btn-run-sr" type="button" class="btn btn-accent btn-block btn-lg" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                        <span>UPSCALE PATCH TO 2.5m</span>
+                    </button>
+                    <div class="upscale-explainer">
+                        <span class="badge-dot"></span>
+                        <span id="upscale-explainer-text">Selected <strong>SEN2SR-Lite</strong> &bull; 4&times; spatial upscaling (10m &rarr; 2.5m)</span>
+                    </div>
+                </div>
+
+                <!-- Live Progress Tracking -->
+                <div id="progress-card" class="sidebar-card progress-card hidden">
+                    <div class="card-header">
+                        <span class="card-title-text">Processing Pipeline</span>
+                        <span id="progress-percent-text" class="badge badge-accent">0%</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="progress-bar-wrapper">
+                            <div id="progress-fill" class="progress-bar-fill" style="width: 0%;"></div>
+                        </div>
+                        <div class="progress-status-row">
+                            <span id="progress-step-text" class="progress-step-text">Initializing...</span>
+                        </div>
+                        <ul id="progress-steps-list" class="progress-steps-list">
+                            <li id="step-aoi" class="step-item">&bull; 1. Window &amp; AOI Acquisition</li>
+                            <li id="step-stream" class="step-item">&bull; 2. Radiometric Preprocessing (10 Bands)</li>
+                            <li id="step-model" class="step-item">&bull; 3. Neural Super-Resolution Execution</li>
+                            <li id="step-geotiff" class="step-item">&bull; 4. Georeferenced GeoTIFF Export (2.5m)</li>
+                            <li id="step-visual" class="step-item">&bull; 5. Dual-Layer Interactive Overlays Ready</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Section 4: Results & Downloads -->
+                <div id="results-card" class="sidebar-card results-card hidden">
+                    <div class="card-header">
+                        <div class="card-title-text text-success">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            Super-Resolution Complete
+                        </div>
+                        <span class="badge badge-success">2.5m GSD Ready</span>
+                    </div>
+                    <div class="card-body">
+                        <!-- Scientific Notice -->
+                        <div class="scientific-notice">
+                            <strong>Notice:</strong> 2.5m imagery is a neural super-resolution reconstruction. High-frequency spatial detail is model-inferred and is not directly observed by Sentinel-2. Physical spectral fidelity is calibrated to Sentinel-2 surface reflectance.
+                        </div>
+
+                        <div class="results-table">
+                            <div class="result-row">
+                                <span class="r-label">Model Architecture:</span>
+                                <span id="res-model" class="r-val highlight">SEN2SR-Lite</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Native Sentinel-2 GSD:</span>
+                                <span class="r-val">10.0 meters</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Output Super-Resolved GSD:</span>
+                                <span class="r-val highlight">2.50 meters (4&times;)</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Preserved Multi-Spectral Bands:</span>
+                                <span class="r-val">10 Bands [B02..B12]</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Coordinate Reference System:</span>
+                                <span id="res-crs" class="r-val font-mono">EPSG:32617</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Inference Execution Time:</span>
+                                <span id="res-time" class="r-val">-- s</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Peak GPU VRAM:</span>
+                                <span id="res-vram" class="r-val font-mono">-- MB</span>
+                            </div>
+                            <div class="result-row">
+                                <span class="r-label">Compute Device:</span>
+                                <span id="res-device" class="r-val">{{ sys_info.device_name }}</span>
+                            </div>
+                        </div>
+
+                        <!-- Downloads Action Buttons -->
+                        <div class="download-actions">
+                            <a id="btn-download-geotiff" class="btn btn-primary btn-block btn-download" href="#" download>
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                Download 10-Band 2.5m GeoTIFF
+                            </a>
+                            <div class="download-subrow">
+                                <a id="btn-download-rgb" class="btn btn-secondary btn-sm flex-1" href="#" download>
+                                    Download RGB (PNG)
+                                </a>
+                                <a id="btn-download-cir" class="btn btn-secondary btn-sm flex-1" href="#" download>
+                                    Download CIR (PNG)
+                                </a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Application JavaScript Bundle -->
+    <script src="/static/js/app.js?v=3.3"></script>
+</body>
+</html>
