@@ -1,0 +1,1486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="light dark">
+<title>NTRO-SRM — Module Bench</title>
+
+<!-- theme.js first, exactly as index.html does it, so applyStoredEarly() is exercised
+     in its real position: before any stylesheet, before first paint. -->
+<script src="./theme.js"></script>
+<script>try { window.NTRO && NTRO.theme && NTRO.theme.applyStoredEarly(); } catch (e) {}</script>
+
+<link rel="stylesheet" href="../../vendor/leaflet/leaflet.css">
+
+<style>
+/* ==========================================================================
+   Design tokens — copied verbatim from web/static/css/app.css, plus the
+   additions the module contract guarantees the lead will add.
+   ========================================================================== */
+:root {
+    --bg-canvas: #f8fafc;
+    --bg-panel: #ffffff;
+    --bg-card: #ffffff;
+    --bg-subtle: #f1f5f9;
+    --bg-hover: #e2e8f0;
+    --bg-active: #e0e7ff;
+
+    --border-subtle: #e2e8f0;
+    --border-medium: #cbd5e1;
+    --border-focus: #3b82f6;
+
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    --text-muted: #64748b;
+    --text-inverse: #ffffff;
+
+    --primary-50: #eff6ff;
+    --primary-100: #dbeafe;
+    --primary-500: #3b82f6;
+    --primary-600: #2563eb;
+    --primary-700: #1d4ed8;
+    --primary-gradient: linear-gradient(135deg, #2563eb 0%, #1d4ed8 50%, #4338ca 100%);
+
+    --accent-emerald: #059669;
+    --accent-emerald-bg: #ecfdf5;
+    --accent-emerald-border: #a7f3d0;
+
+    --accent-amber: #d97706;
+    --accent-amber-bg: #fffbeb;
+    --accent-amber-border: #fde68a;
+
+    --accent-blue: #0284c7;
+    --accent-blue-bg: #f0f9ff;
+    --accent-blue-border: #bae6fd;
+
+    --accent-purple: #7c3aed;
+    --accent-purple-bg: #f5f3ff;
+
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+    --shadow-floating: 0 8px 24px -4px rgba(15, 23, 42, 0.12), 0 2px 6px -1px rgba(15, 23, 42, 0.06);
+
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-full: 9999px;
+
+    --font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* Contract additions (the lead adds these to app.css). */
+    --accent-red: #dc2626;
+    --accent-red-bg: #fef2f2;
+    --accent-red-border: #fecaca;
+    --overlay-scrim: rgba(15, 23, 42, .55);
+    --z-toast: 9000;
+    --z-modal: 9500;
+    --z-loupe: 8000;
+
+    /* loupe.js reads these with fallbacks; pinning them keeps the reticle legible
+       over a dark basemap in both themes. */
+    --loupe-reticle: #ffffff;
+    --loupe-reticle-edge: rgba(15, 23, 42, .55);
+    --loupe-badge-bg: rgba(15, 23, 42, .62);
+}
+
+[data-theme="dark"] {
+    --bg-canvas: #0a0f1a;
+    --bg-panel: #111827;
+    --bg-card: #141d2c;
+    --bg-subtle: #1a2432;
+    --bg-hover: #243044;
+    --bg-active: #1e2a4d;
+
+    --border-subtle: #1f2a3a;
+    --border-medium: #334155;
+    --border-focus: #60a5fa;
+
+    --text-primary: #e6edf5;
+    --text-secondary: #a7b4c6;
+    --text-muted: #8494a8;
+    --text-inverse: #0a0f1a;
+
+    --primary-50: #16233f;
+    --primary-100: #1e3a8a;
+    --primary-500: #60a5fa;
+    --primary-600: #60a5fa;
+    --primary-700: #93c5fd;
+    --primary-gradient: linear-gradient(135deg, #1d4ed8 0%, #4338ca 55%, #6d28d9 100%);
+
+    --accent-emerald: #34d399;
+    --accent-emerald-bg: #06281f;
+    --accent-emerald-border: #0f5f47;
+
+    --accent-amber: #fbbf24;
+    --accent-amber-bg: #2b1f06;
+    --accent-amber-border: #78500f;
+
+    --accent-blue: #38bdf8;
+    --accent-blue-bg: #072634;
+    --accent-blue-border: #0e5f85;
+
+    --accent-purple: #a78bfa;
+    --accent-purple-bg: #241a45;
+
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.5);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.55), 0 2px 4px -2px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.6), 0 4px 6px -4px rgba(0, 0, 0, 0.4);
+    --shadow-floating: 0 8px 28px -4px rgba(0, 0, 0, 0.7), 0 2px 6px -1px rgba(0, 0, 0, 0.5);
+
+    --accent-red: #f87171;
+    --accent-red-bg: #341114;
+    --accent-red-border: #7f1d1d;
+    --overlay-scrim: rgba(2, 6, 23, .7);
+
+    --loupe-reticle: #f8fafc;
+    --loupe-reticle-edge: rgba(0, 0, 0, .8);
+    --loupe-badge-bg: rgba(2, 6, 23, .78);
+}
+
+/* ==========================================================================
+   Bench chrome — deliberately plain, so anything that looks wrong is the
+   module's doing and not the harness's.
+   ========================================================================== */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: var(--font-family);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-primary);
+    background-color: var(--bg-canvas);
+    -webkit-font-smoothing: antialiased;
+}
+
+.bench-header {
+    position: sticky;
+    top: 0;
+    z-index: 500;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    padding: 0.7rem 1.25rem;
+    background-color: var(--bg-panel);
+    border-bottom: 1px solid var(--border-subtle);
+    box-shadow: var(--shadow-sm);
+}
+.bench-brand { display: flex; align-items: baseline; gap: 0.6rem; }
+.bench-brand h1 { font-size: 0.95rem; font-weight: 800; letter-spacing: -0.3px; }
+.bench-brand span {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-muted);
+}
+.bench-header-right { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+.tally {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.2rem 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    border-radius: var(--radius-full);
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-subtle);
+    color: var(--text-muted);
+}
+.tally.is-bad { color: var(--accent-red); background: var(--accent-red-bg); border-color: var(--accent-red-border); }
+.tally.is-ok { color: var(--accent-emerald); background: var(--accent-emerald-bg); border-color: var(--accent-emerald-border); }
+
+main { padding: 1.1rem 1.25rem 4rem; max-width: 1680px; margin: 0 auto; }
+.bench-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 1rem; align-items: start; }
+.span-all { grid-column: 1 / -1; }
+
+.card {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-sm);
+    overflow: hidden;
+}
+.card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.85rem;
+    background-color: var(--bg-subtle);
+    border-bottom: 1px solid var(--border-subtle);
+}
+.card-head h2 { font-size: 0.8rem; font-weight: 700; letter-spacing: -0.1px; }
+.card-head code {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    color: var(--text-muted);
+}
+.card-body { padding: 0.85rem; }
+
+.row { display: flex; flex-wrap: wrap; gap: 0.35rem; align-items: center; }
+.row + .row { margin-top: 0.45rem; }
+.rule { margin: 0.75rem 0; border: 0; border-top: 1px dashed var(--border-subtle); }
+
+.eyebrow {
+    display: block;
+    margin: 0.9rem 0 0.35rem;
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--text-muted);
+}
+.eyebrow:first-child { margin-top: 0; }
+
+/* Buttons mirror .btn / .btn-secondary from app.css. */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-family);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    border: 1px solid var(--border-medium);
+    background-color: var(--bg-panel);
+    color: var(--text-secondary);
+}
+.btn:hover { background-color: var(--bg-hover); color: var(--text-primary); }
+.btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.btn-primary { background-color: var(--primary-600); border-color: var(--primary-600); color: #ffffff; }
+.btn-primary:hover { background-color: var(--primary-700); border-color: var(--primary-700); color: #ffffff; }
+.btn-danger { color: var(--accent-red); border-color: var(--accent-red-border); background: var(--accent-red-bg); }
+
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-subtle);
+    background-color: var(--bg-subtle);
+    color: var(--text-muted);
+}
+
+.readout {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.7;
+    padding: 0.5rem 0.6rem;
+    color: var(--text-secondary);
+    background-color: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.readout b { color: var(--text-primary); }
+
+.log {
+    height: 168px;
+    overflow: auto;
+    overscroll-behavior: contain;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    line-height: 1.6;
+    padding: 0.5rem 0.6rem;
+    color: var(--text-secondary);
+    background-color: var(--bg-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+.log p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.log .t { color: var(--text-muted); }
+.log .k-err { color: var(--accent-red); font-weight: 600; }
+.log .k-warn { color: var(--accent-amber); font-weight: 600; }
+.log .k-ok { color: var(--accent-emerald); font-weight: 600; }
+.log .k-key { color: var(--primary-600); font-weight: 600; }
+.log .empty { color: var(--text-muted); font-style: italic; }
+
+.field {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    padding: 0.35rem 0.5rem;
+    color: var(--text-primary);
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-sm);
+}
+.field:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+label.inline { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; color: var(--text-secondary); }
+
+/* Chart cells */
+.chart-stack > * + * { margin-top: 0.9rem; }
+.chart-cell { min-width: 0; }
+.chart-cell > figcaption {
+    margin-bottom: 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    color: var(--text-muted);
+}
+.gauge-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.9rem 1.1rem; }
+.degenerate-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 0.8rem; }
+.degenerate-grid .chart-cell {
+    padding: 0.55rem;
+    border: 1px dashed var(--border-medium);
+    border-radius: var(--radius-sm);
+    background-color: var(--bg-subtle);
+}
+
+/* Map */
+#bench-map { height: 340px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); }
+.map-frame { position: relative; }
+.leaflet-container { background: var(--bg-subtle); font-family: var(--font-family); }
+
+/* Inspector panels — the real app hosts these in a ~320px sidebar column. */
+.insp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.8rem; }
+.insp-slot {
+    padding: 0.6rem;
+    background-color: var(--bg-panel);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+}
+.insp-slot > h3 {
+    margin-bottom: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+#diag-banner {
+    display: none;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.9rem;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--accent-red);
+    background-color: var(--accent-red-bg);
+    border: 1px solid var(--accent-red-border);
+    border-radius: var(--radius-sm);
+}
+#diag-banner.is-on { display: flex; }
+
+@media (prefers-reduced-motion: reduce) {
+    .btn { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="bench-header">
+    <div class="bench-brand">
+        <h1>NTRO-SRM Module Bench</h1>
+        <span>web/static/js/modules/ — integration harness</span>
+    </div>
+    <div class="bench-header-right">
+        <span class="tally" id="tally-loaded">modules 0/6</span>
+        <span class="tally" id="tally-errors">errors 0</span>
+        <span class="tally" id="tally-warns">warnings 0</span>
+        <button id="bench-theme-toggle" class="btn" type="button" data-ntro-theme-toggle></button>
+    </div>
+</header>
+
+<main>
+    <div id="diag-banner" role="alert"></div>
+
+    <div class="bench-grid">
+
+        <!-- ============================================================ TOAST -->
+        <section class="card">
+            <div class="card-head"><h2>Toast notifications</h2><code>NTRO.toast</code></div>
+            <div class="card-body">
+                <span class="eyebrow">Types</span>
+                <div class="row">
+                    <button class="btn" data-act="toast-info">info()</button>
+                    <button class="btn" data-act="toast-success">success()</button>
+                    <button class="btn" data-act="toast-warning">warning()</button>
+                    <button class="btn" data-act="toast-error">error()</button>
+                    <button class="btn" data-act="toast-show">show() titled</button>
+                </div>
+
+                <span class="eyebrow">Lifecycle</span>
+                <div class="row">
+                    <button class="btn" data-act="toast-sticky">sticky (duration 0)</button>
+                    <button class="btn" data-act="toast-replace">replace id "job-42"</button>
+                    <button class="btn" data-act="toast-actions">with actions</button>
+                    <button class="btn" data-act="toast-flood">flood 8 (cap is 5)</button>
+                    <button class="btn" data-act="toast-error-obj">error(new Error)</button>
+                </div>
+
+                <span class="eyebrow">Progress handle</span>
+                <div class="row">
+                    <button class="btn btn-primary" data-act="toast-prog-ok">tick 0&rarr;100 &rarr; succeed()</button>
+                    <button class="btn" data-act="toast-prog-fail">tick &rarr; fail()</button>
+                    <button class="btn" data-act="toast-prog-indet">indeterminate</button>
+                    <button class="btn" data-act="toast-prog-dismiss">handle.dismiss()</button>
+                </div>
+
+                <div class="row" style="margin-top:.7rem">
+                    <button class="btn btn-danger" data-act="toast-dismiss-last">dismiss(lastId)</button>
+                    <button class="btn btn-danger" data-act="toast-clear">clear()</button>
+                </div>
+                <div class="readout" id="toast-readout" style="margin-top:.6rem"></div>
+            </div>
+        </section>
+
+        <!-- ============================================================ THEME -->
+        <section class="card">
+            <div class="card-head"><h2>Colour theme</h2><code>NTRO.theme</code></div>
+            <div class="card-body">
+                <span class="eyebrow">Cycle light &rarr; dark &rarr; system</span>
+                <div class="row">
+                    <button class="btn" data-act="theme-toggle">toggle()</button>
+                    <button class="btn" data-act="theme-light">set("light")</button>
+                    <button class="btn" data-act="theme-dark">set("dark")</button>
+                    <button class="btn" data-act="theme-system">set("system")</button>
+                    <button class="btn" data-act="theme-bogus">set("chartreuse")</button>
+                </div>
+                <div class="row">
+                    <button class="btn" data-act="theme-early">applyStoredEarly()</button>
+                    <button class="btn" data-act="theme-unsub">unsubscribe onChange</button>
+                    <button class="btn" data-act="theme-reinit">init() again (idempotence)</button>
+                </div>
+                <div class="readout" id="theme-readout" style="margin-top:.7rem"></div>
+                <span class="eyebrow">onChange log</span>
+                <div class="log" id="theme-log" style="height:96px"></div>
+                <p style="margin-top:.5rem;font-size:.7rem;color:var(--text-muted)">
+                    The header button is the bound <code style="font-family:var(--font-mono)">[data-ntro-theme-toggle]</code>;
+                    every card on this page repaints from the tokens alone.
+                </p>
+            </div>
+        </section>
+
+        <!-- ======================================================== SHORTCUTS -->
+        <section class="card">
+            <div class="card-head"><h2>Keyboard shortcuts</h2><code>NTRO.shortcuts</code></div>
+            <div class="card-body">
+                <div class="row">
+                    <span class="badge">?</span><span class="badge">escape</span>
+                    <span class="badge">shift+d</span><span class="badge">ctrl+k</span>
+                    <span class="badge">g</span><span class="badge">arrowleft</span>
+                    <span class="badge">arrowright</span><span class="badge">ctrl+enter *</span>
+                </div>
+                <p style="margin-top:.4rem;font-size:.7rem;color:var(--text-muted)">
+                    * the only binding registered with <code style="font-family:var(--font-mono)">allowInInput: true</code>.
+                </p>
+
+                <div class="row" style="margin-top:.6rem">
+                    <button class="btn" data-act="sc-help">showHelp()</button>
+                    <button class="btn" data-act="sc-help-toggle">toggleHelp()</button>
+                    <button class="btn" data-act="sc-hide">hideHelp()</button>
+                    <button class="btn" data-act="sc-list">list()</button>
+                </div>
+                <div class="row">
+                    <button class="btn" data-act="sc-disable">setEnabled(false)</button>
+                    <button class="btn" data-act="sc-enable">setEnabled(true)</button>
+                    <button class="btn" data-act="sc-unregister">unregister("g")</button>
+                    <button class="btn" data-act="sc-register">register("g")</button>
+                    <button class="btn" data-act="sc-throw">register a throwing handler</button>
+                </div>
+
+                <span class="eyebrow">Focus test</span>
+                <div class="row">
+                    <input class="field" id="sc-input" type="text" placeholder="type d, ?, g here — nothing must fire" size="34">
+                    <textarea class="field" id="sc-textarea" rows="1" cols="14" placeholder="textarea too"></textarea>
+                </div>
+
+                <span class="eyebrow">Dispatch log</span>
+                <div class="log" id="sc-log"></div>
+            </div>
+        </section>
+
+        <!-- ============================================================ LOUPE -->
+        <section class="card">
+            <div class="card-head"><h2>Magnifier loupe</h2><code>NTRO.loupe</code></div>
+            <div class="card-body">
+                <div class="row">
+                    <button class="btn btn-primary" data-act="loupe-attach">attach(map)</button>
+                    <button class="btn" data-act="loupe-enable">enable()</button>
+                    <button class="btn" data-act="loupe-toggle">toggle()</button>
+                    <button class="btn" data-act="loupe-refresh">refresh()</button>
+                    <button class="btn" data-act="loupe-disable">disable()</button>
+                </div>
+                <div class="row">
+                    <button class="btn" data-act="loupe-z2">setZoomOffset(2)</button>
+                    <button class="btn" data-act="loupe-z3">setZoomOffset(3)</button>
+                    <button class="btn" data-act="loupe-z5">setZoomOffset(5)</button>
+                    <button class="btn" data-act="loupe-znan">setZoomOffset(NaN)</button>
+                    <button class="btn" data-act="loupe-nolayers">buildLayers &rarr; []</button>
+                    <button class="btn" data-act="loupe-throw">buildLayers throws</button>
+                </div>
+                <div class="readout" id="loupe-readout" style="margin:.6rem 0"></div>
+                <div class="map-frame"><div id="bench-map"></div></div>
+                <p style="margin-top:.5rem;font-size:.7rem;color:var(--text-muted)">
+                    Synthetic canvas tiles + a generated image overlay — the bench never touches the network,
+                    and the 4&nbsp;px hatch makes the magnification factor readable by eye.
+                </p>
+            </div>
+        </section>
+
+        <!-- =========================================================== CHARTS -->
+        <section class="card span-all">
+            <div class="card-head">
+                <h2>Charts</h2>
+                <div class="row">
+                    <button class="btn" data-act="charts-render">re-render all</button>
+                    <code>NTRO.charts</code>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="bench-grid">
+                    <div class="chart-stack">
+                        <figure class="chart-cell">
+                            <figcaption>spectralProfile — 10 bands, native / super-resolved / bicubic</figcaption>
+                            <div id="c-spectral"></div>
+                        </figure>
+                        <figure class="chart-cell">
+                            <figcaption>histogram — per-pixel reconstruction confidence, 20 bins</figcaption>
+                            <div id="c-histogram"></div>
+                        </figure>
+                    </div>
+                    <div class="chart-stack">
+                        <figure class="chart-cell">
+                            <figcaption>groupedBars — PSNR per band, model vs bicubic</figcaption>
+                            <div id="c-grouped"></div>
+                        </figure>
+                        <div class="gauge-grid">
+                            <figure class="chart-cell"><div id="c-gauge-psnr"></div></figure>
+                            <figure class="chart-cell"><div id="c-gauge-ssim"></div></figure>
+                            <figure class="chart-cell"><div id="c-gauge-sam"></div></figure>
+                            <figure class="chart-cell"><div id="c-gauge-ergas"></div></figure>
+                        </div>
+                        <figure class="chart-cell">
+                            <figcaption>classBar — NDVI thematic composition</figcaption>
+                            <div id="c-classbar"></div>
+                        </figure>
+                        <figure class="chart-cell">
+                            <figcaption>gradientLegend — viridis ramp for the NDVI overlay</figcaption>
+                            <div id="c-ramp"></div>
+                        </figure>
+                    </div>
+                </div>
+
+                <hr class="rule">
+                <span class="eyebrow">Degenerate input — every cell must render a note or an honest axis, never a blank box and never a thrown error</span>
+                <div class="degenerate-grid" id="degenerate-grid"></div>
+            </div>
+        </section>
+
+        <!-- ======================================================== INSPECTOR -->
+        <section class="card span-all">
+            <div class="card-head">
+                <h2>Pixel inspector</h2>
+                <div class="row">
+                    <button class="btn" data-act="insp-render">render all</button>
+                    <button class="btn" data-act="insp-clear">clear() all</button>
+                    <code>NTRO.inspector</code>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="insp-grid" id="insp-grid"></div>
+            </div>
+        </section>
+
+        <!-- ====================================================== DIAGNOSTICS -->
+        <section class="card span-all">
+            <div class="card-head">
+                <h2>Diagnostics</h2>
+                <div class="row">
+                    <button class="btn" data-act="diag-clear">clear</button>
+                    <code>window.onerror · unhandledrejection · console.error/warn</code>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="log" id="diag-log" style="height:220px"></div>
+            </div>
+        </section>
+
+    </div>
+</main>
+
+<script src="../../vendor/leaflet/leaflet.js"></script>
+<script src="./toast.js"></script>
+<script src="./charts.js"></script>
+<script src="./shortcuts.js"></script>
+<script src="./loupe.js"></script>
+<script src="./inspector.js"></script>
+
+<script>
+(function (window, document) {
+    "use strict";
+
+    var NTRO = window.NTRO || {};
+
+    /* =====================================================================
+       0. Diagnostics — everything the modules do wrong has to be visible
+          here, and machine-readable from window.__BENCH for the CDP driver.
+       ===================================================================== */
+
+    var BENCH = window.__BENCH = { errors: [], warns: [], events: [], ready: false };
+
+    var diagLog = document.getElementById("diag-log");
+    var diagBanner = document.getElementById("diag-banner");
+    var tallyErrors = document.getElementById("tally-errors");
+    var tallyWarns = document.getElementById("tally-warns");
+
+    function stamp() {
+        var d = new Date();
+        return ("0" + d.getMinutes()).slice(-2) + ":" + ("0" + d.getSeconds()).slice(-2) +
+               "." + ("00" + d.getMilliseconds()).slice(-3);
+    }
+
+    function append(host, kind, text, cap) {
+        if (!host) return;
+        var p = document.createElement("p");
+        var t = document.createElement("span");
+        t.className = "t";
+        t.textContent = stamp() + "  ";
+        var k = document.createElement("span");
+        k.className = "k-" + kind;
+        k.textContent = kind.toUpperCase() + " ";
+        p.appendChild(t);
+        p.appendChild(k);
+        p.appendChild(document.createTextNode(text));
+        host.appendChild(p);
+        while (host.children.length > (cap || 200)) host.removeChild(host.firstChild);
+        host.scrollTop = host.scrollHeight;
+    }
+
+    function paintTallies() {
+        tallyErrors.textContent = "errors " + BENCH.errors.length;
+        tallyErrors.className = "tally " + (BENCH.errors.length ? "is-bad" : "is-ok");
+        tallyWarns.textContent = "warnings " + BENCH.warns.length;
+        tallyWarns.className = "tally" + (BENCH.warns.length ? "" : " is-ok");
+        if (BENCH.errors.length) {
+            diagBanner.classList.add("is-on");
+            diagBanner.textContent = BENCH.errors.length + " runtime error" +
+                (BENCH.errors.length === 1 ? "" : "s") + " — see Diagnostics below.";
+        } else {
+            diagBanner.classList.remove("is-on");
+        }
+    }
+
+    function record(kind, text) {
+        (kind === "err" ? BENCH.errors : BENCH.warns).push(text);
+        append(diagLog, kind === "err" ? "err" : "warn", text);
+        paintTallies();
+    }
+
+    window.addEventListener("error", function (e) {
+        record("err", (e.message || "Script error") + "  @ " +
+            (e.filename || "?").split("/").pop() + ":" + (e.lineno || 0));
+    });
+    window.addEventListener("unhandledrejection", function (e) {
+        var r = e.reason;
+        record("err", "Unhandled rejection: " + ((r && r.message) || String(r)));
+    });
+
+    // Modules report their own defensive paths through console.warn/error; those are
+    // expected in the degenerate cases, so they are tallied separately from throws.
+    ["error", "warn"].forEach(function (level) {
+        var original = window.console && window.console[level];
+        if (typeof original !== "function") return;
+        window.console[level] = function () {
+            var parts = [];
+            for (var i = 0; i < arguments.length; i++) {
+                var a = arguments[i];
+                parts.push(a instanceof Error ? (a.message + " | " + (a.stack || "").split("\n")[1] || "")
+                                              : (typeof a === "object" ? JSON.stringify(a) : String(a)));
+            }
+            record(level === "error" ? "err" : "warn", "console." + level + ": " + parts.join(" "));
+            try { original.apply(window.console, arguments); } catch (ignored) { /* noop */ }
+        };
+    });
+
+    /* Module presence -------------------------------------------------- */
+
+    var CONTRACT = {
+        toast: ["show", "info", "success", "warning", "error", "dismiss", "clear", "progress"],
+        theme: ["init", "get", "resolved", "set", "toggle", "onChange", "applyStoredEarly"],
+        charts: ["spectralProfile", "metricGauge", "histogram", "classBar", "gradientLegend", "groupedBars"],
+        shortcuts: ["init", "register", "unregister", "list", "showHelp", "hideHelp", "toggleHelp", "setEnabled"],
+        loupe: ["attach", "enable", "disable", "toggle", "isEnabled", "refresh", "setZoomOffset"],
+        inspector: ["render", "clear", "renderEmpty"]
+    };
+
+    (function auditContract() {
+        var loaded = 0, missing = [];
+        Object.keys(CONTRACT).forEach(function (name) {
+            var mod = NTRO[name];
+            if (!mod) { missing.push(name + " (module absent)"); return; }
+            loaded += 1;
+            CONTRACT[name].forEach(function (fn) {
+                if (typeof mod[fn] !== "function") missing.push("NTRO." + name + "." + fn);
+            });
+        });
+        BENCH.contractMissing = missing;
+        var tally = document.getElementById("tally-loaded");
+        tally.textContent = "modules " + loaded + "/6" + (missing.length ? " · " + missing.length + " gaps" : "");
+        tally.className = "tally " + (loaded === 6 && !missing.length ? "is-ok" : "is-bad");
+        if (missing.length) record("err", "Contract symbols missing: " + missing.join(", "));
+        else append(diagLog, "ok", "Contract audit clean — 6 modules, " +
+            Object.keys(CONTRACT).reduce(function (n, k) { return n + CONTRACT[k].length; }, 0) + " symbols present.");
+    })();
+
+    var $ = function (sel) { return document.querySelector(sel); };
+    var acts = {};
+
+    /* =====================================================================
+       1. Toast
+       ===================================================================== */
+
+    var toastState = { last: null, handle: null, tick: null, replaceRun: 0 };
+    var toastReadout = $("#toast-readout");
+
+    function paintToast(note) {
+        toastReadout.innerHTML = "";
+        var lines = [
+            "lastId    " + (toastState.last || "—"),
+            "handle    " + (toastState.handle ? toastState.handle.id : "—"),
+            "note      " + (note || "—")
+        ];
+        toastReadout.textContent = lines.join("\n");
+    }
+
+    function stopTick() {
+        if (toastState.tick) { window.clearInterval(toastState.tick); toastState.tick = null; }
+    }
+
+    function runProgress(succeed) {
+        if (!NTRO.toast) return;
+        stopTick();
+        var handle = NTRO.toast.progress("Queued…", {
+            title: succeed ? "Super-resolving patch" : "Super-resolving patch",
+            id: "bench-progress"
+        });
+        toastState.handle = handle;
+        var pct = 0;
+        var stages = ["Fetching L2A granule", "Stacking 10 bands", "Tiling 128 px windows",
+                      "Running SEN2SR forward pass", "Blending overlaps", "Writing COG"];
+        toastState.tick = window.setInterval(function () {
+            pct += 10;
+            if (!succeed && pct >= 40) {
+                stopTick();
+                handle.fail("CUDA out of memory at tile 41 of 96 — retry with a smaller patch.");
+                paintToast("progress → fail() at " + pct + "%");
+                return;
+            }
+            if (pct >= 100) {
+                stopTick();
+                handle.update("Writing COG", 100);
+                handle.succeed("Patch super-resolved to 2.5 m — 4× GSD, 10 bands, 96 tiles.");
+                paintToast("progress → succeed() at 100%");
+                return;
+            }
+            handle.update(stages[Math.min(stages.length - 1, Math.floor(pct / 18))] + "  " + pct + "%", pct);
+        }, 220);
+        paintToast("progress started (" + (succeed ? "will succeed" : "will fail") + ")");
+    }
+
+    acts["toast-info"] = function () {
+        toastState.last = NTRO.toast.info("Scene S2B_MSIL2A_20240418T052649 added to the queue.");
+        paintToast("info");
+    };
+    acts["toast-success"] = function () {
+        toastState.last = NTRO.toast.success("Export complete — ntro_srm_2p5m.tif (184.2 MB).", { title: "Download ready" });
+        paintToast("success");
+    };
+    acts["toast-warning"] = function () {
+        toastState.last = NTRO.toast.warning("Cloud cover in this patch is 34 % — metrics may be optimistic.", { title: "Quality caveat" });
+        paintToast("warning");
+    };
+    acts["toast-error"] = function () {
+        toastState.last = NTRO.toast.error("Catalogue search failed: CDSE returned HTTP 503.", { title: "Search failed" });
+        paintToast("error");
+    };
+    acts["toast-error-obj"] = function () {
+        toastState.last = NTRO.toast.error(new Error("RasterioIOError: /vsicurl/ read timed out"));
+        paintToast("error(Error instance)");
+    };
+    acts["toast-show"] = function () {
+        toastState.last = NTRO.toast.show("Default type, explicit title, 9 s duration.",
+            { title: "show() with options", duration: 9000 });
+        paintToast("show");
+    };
+    acts["toast-sticky"] = function () {
+        toastState.last = NTRO.toast.show("Sticky — duration 0. Dismiss it by hand, or press Enter with it focused.",
+            { title: "Persistent notice", type: "warning", duration: 0 });
+        paintToast("sticky");
+    };
+    acts["toast-replace"] = function () {
+        toastState.replaceRun += 1;
+        var types = ["info", "warning", "success"];
+        toastState.last = NTRO.toast.show("Job 42 status update #" + toastState.replaceRun +
+            " — the node is reused, not stacked.", {
+            id: "job-42",
+            title: "Job 42",
+            type: types[toastState.replaceRun % types.length],
+            duration: 0
+        });
+        paintToast("replaced id job-42 (run " + toastState.replaceRun + ")");
+    };
+    acts["toast-actions"] = function () {
+        toastState.last = NTRO.toast.show("Patch 07 finished with SSIM 0.81, below the 0.85 gate.", {
+            title: "Below quality gate",
+            type: "warning",
+            duration: 0,
+            actions: [
+                { label: "Open metrics", onClick: function () { append($("#sc-log"), "ok", "toast action: Open metrics"); } },
+                { label: "Re-run", onClick: function () { append($("#sc-log"), "ok", "toast action: Re-run"); } }
+            ]
+        });
+        paintToast("with 2 actions");
+    };
+    acts["toast-flood"] = function () {
+        for (var i = 1; i <= 8; i++) {
+            toastState.last = NTRO.toast.info("Tile " + i + " of 8 written to /outputs/job-42/.");
+        }
+        paintToast("flooded 8 — at most 5 should remain");
+    };
+    acts["toast-prog-ok"] = function () { runProgress(true); };
+    acts["toast-prog-fail"] = function () { runProgress(false); };
+    acts["toast-prog-indet"] = function () {
+        stopTick();
+        toastState.handle = NTRO.toast.progress("Contacting Copernicus Data Space…", { title: "Catalogue search", id: "bench-indet" });
+        toastState.handle.update("Still waiting on the STAC endpoint…");   // pct undefined -> indeterminate
+        paintToast("indeterminate bar");
+    };
+    acts["toast-prog-dismiss"] = function () {
+        stopTick();
+        if (toastState.handle) toastState.handle.dismiss();
+        paintToast("handle.dismiss()");
+    };
+    acts["toast-dismiss-last"] = function () {
+        NTRO.toast.dismiss(toastState.last);
+        paintToast("dismiss(" + toastState.last + ")");
+    };
+    acts["toast-clear"] = function () {
+        stopTick();
+        NTRO.toast.clear();
+        NTRO.toast.dismiss("no-such-id");        // must no-op, not throw
+        NTRO.toast.dismiss(null);
+        paintToast("clear() + dismiss of unknown ids");
+    };
+
+    /* =====================================================================
+       2. Theme
+       ===================================================================== */
+
+    var themeReadout = $("#theme-readout");
+    var themeLog = $("#theme-log");
+    var themeUnsub = null;
+
+    function paintTheme() {
+        if (!NTRO.theme) return;
+        var root = document.documentElement;
+        themeReadout.textContent = [
+            "get()            " + NTRO.theme.get(),
+            "resolved()       " + NTRO.theme.resolved(),
+            "data-theme       " + (root.getAttribute("data-theme") || "—"),
+            "data-theme-pref  " + (root.getAttribute("data-theme-pref") || "—"),
+            "meta color-scheme " + ((document.querySelector('meta[name="color-scheme"]') || {}).content || "—"),
+            "OS prefers dark  " + (window.matchMedia("(prefers-color-scheme: dark)").matches),
+            "localStorage     " + (function () {
+                try { return window.localStorage.getItem("ntro-srm.theme"); } catch (e) { return "unavailable"; }
+            })(),
+            "subscribed       " + (themeUnsub ? "yes" : "no")
+        ].join("\n");
+    }
+
+    function subscribeTheme() {
+        if (!NTRO.theme || themeUnsub) return;
+        themeUnsub = NTRO.theme.onChange(function (resolved, preference) {
+            append(themeLog, "ok", "onChange(resolved=" + resolved + ", preference=" + preference + ")", 60);
+            paintTheme();
+        });
+    }
+
+    acts["theme-toggle"] = function () {
+        var next = NTRO.theme.toggle();
+        append(themeLog, "key", "toggle() -> " + next, 60);
+        paintTheme();
+    };
+    acts["theme-light"] = function () { NTRO.theme.set("light"); paintTheme(); };
+    acts["theme-dark"] = function () { NTRO.theme.set("dark"); paintTheme(); };
+    acts["theme-system"] = function () { NTRO.theme.set("system"); paintTheme(); };
+    acts["theme-bogus"] = function () {
+        NTRO.theme.set("chartreuse");            // must warn and change nothing
+        NTRO.theme.set(null);
+        paintTheme();
+    };
+    acts["theme-early"] = function () {
+        var r = NTRO.theme.applyStoredEarly();
+        append(themeLog, "key", "applyStoredEarly() -> " + r, 60);
+        paintTheme();
+    };
+    acts["theme-unsub"] = function () {
+        if (themeUnsub) {
+            themeUnsub();
+            themeUnsub();                        // double unsubscribe must be harmless
+            themeUnsub = null;
+            append(themeLog, "key", "unsubscribed (twice — the second is a no-op)", 60);
+        } else {
+            subscribeTheme();
+            append(themeLog, "key", "re-subscribed", 60);
+        }
+        paintTheme();
+    };
+    acts["theme-reinit"] = function () {
+        NTRO.theme.init({ toggleSelector: "[data-ntro-theme-toggle]" });
+        append(themeLog, "key", "init() called a second time", 60);
+        paintTheme();
+    };
+
+    /* =====================================================================
+       3. Shortcuts
+       ===================================================================== */
+
+    var scLog = $("#sc-log");
+
+    function logKey(combo, extra) {
+        append(scLog, "key", combo + (extra ? "  " + extra : ""));
+        BENCH.events.push("key:" + combo);
+    }
+
+    function registerShortcuts() {
+        if (!NTRO.shortcuts) return;
+        var S = NTRO.shortcuts;
+        S.init();
+        S.init();                                 // idempotent: one listener only
+
+        S.register("?", {
+            description: "Show this help dialog", group: "General",
+            handler: function () { logKey("?", "-> toggleHelp()"); S.toggleHelp(); }
+        });
+        S.register("escape", {
+            description: "Close the open panel or cancel drawing", group: "General",
+            handler: function () { logKey("escape", "(fires even from inside an input)"); }
+        });
+        S.register("shift+d", {
+            description: "Toggle the difference overlay", group: "Comparison",
+            handler: function () { logKey("shift+d"); }
+        });
+        S.register("ctrl+k", {
+            description: "Focus the scene search box", group: "Navigation",
+            handler: function () { logKey("ctrl+k", "(browser default prevented)"); }
+        });
+        S.register("g", {
+            description: "Cycle the graticule", group: "Map",
+            handler: function () { logKey("g"); }
+        });
+        S.register("arrowleft", {
+            description: "Nudge the swipe divider left", group: "Comparison",
+            handler: function () { logKey("arrowleft"); }
+        });
+        S.register("arrowright", {
+            description: "Nudge the swipe divider right", group: "Comparison",
+            handler: function () { logKey("arrowright"); }
+        });
+        S.register("ctrl+enter", {
+            description: "Submit the search from inside the field", group: "Navigation",
+            allowInInput: true,
+            handler: function () { logKey("ctrl+enter", "allowInInput"); }
+        });
+        S.register("", { handler: function () {} });          // rejected: empty combo
+        S.register("shift+x", { description: "no handler" }); // rejected: no handler
+        append(scLog, "ok", "registered " + S.list().length + " bindings");
+    }
+
+    acts["sc-help"] = function () { NTRO.shortcuts.showHelp(); };
+    acts["sc-help-toggle"] = function () { NTRO.shortcuts.toggleHelp(); };
+    acts["sc-hide"] = function () { NTRO.shortcuts.hideHelp(); };
+    acts["sc-list"] = function () {
+        NTRO.shortcuts.list().forEach(function (b) {
+            append(scLog, "ok", b.group + " / " + b.combo + " — " + b.description);
+        });
+    };
+    acts["sc-disable"] = function () { NTRO.shortcuts.setEnabled(false); append(scLog, "warn", "setEnabled(false)"); };
+    acts["sc-enable"] = function () { NTRO.shortcuts.setEnabled(true); append(scLog, "ok", "setEnabled(true)"); };
+    acts["sc-unregister"] = function () {
+        append(scLog, "warn", 'unregister("g") -> ' + NTRO.shortcuts.unregister("g") +
+            "; again -> " + NTRO.shortcuts.unregister("g"));
+    };
+    acts["sc-register"] = function () {
+        NTRO.shortcuts.register("g", {
+            description: "Cycle the graticule", group: "Map",
+            handler: function () { logKey("g"); }
+        });
+        append(scLog, "ok", 'register("g") restored');
+    };
+    acts["sc-throw"] = function () {
+        NTRO.shortcuts.register("shift+t", {
+            description: "Deliberately broken handler (bench only)", group: "Diagnostics",
+            handler: function () { throw new Error("bench: handler blew up on purpose"); }
+        });
+        append(scLog, "warn", 'register("shift+t") — press Shift+T; the dispatcher must survive it');
+    };
+
+    /* =====================================================================
+       4. Charts
+       ===================================================================== */
+
+    var BANDS = ["B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12"];
+    var NM = [492.4, 559.8, 664.6, 704.1, 740.5, 782.8, 832.8, 864.7, 1613.7, 2202.4];
+    // A vegetated pixel over the Deccan plateau: blue/green/red low, red-edge climbing,
+    // NIR plateau ~0.30, SWIR falling away. Typical L2A boa_reflectance.
+    var LR_REF = [0.0331, 0.0562, 0.0418, 0.0985, 0.2214, 0.2683, 0.2871, 0.3014, 0.1846, 0.0977];
+    var SR_REF = [0.0318, 0.0549, 0.0396, 0.1012, 0.2287, 0.2751, 0.2943, 0.3086, 0.1802, 0.0941];
+    var BC_REF = [0.0340, 0.0571, 0.0429, 0.0971, 0.2189, 0.2650, 0.2836, 0.2978, 0.1871, 0.0996];
+
+    var VIRIDIS = ["#440154", "#414487", "#2a788e", "#22a884", "#7ad151", "#fde725"];
+
+    function tokenColor(name, fallback) {
+        var v = "";
+        try { v = window.getComputedStyle(document.documentElement).getPropertyValue(name); } catch (e) { v = ""; }
+        return (v || "").trim() || fallback;
+    }
+
+    function confidenceHistogram() {
+        var edges = [], counts = [], i;
+        for (i = 0; i <= 20; i++) edges.push(i / 20);
+        // Left-skewed toward high confidence, with a small low-confidence tail (cloud edges).
+        var shape = [3, 5, 9, 14, 22, 31, 44, 63, 92, 138, 214, 336, 512, 780, 1104, 1421, 1608, 1502, 1010, 372];
+        for (i = 0; i < 20; i++) counts.push(shape[i]);
+        return { edges: edges, counts: counts };
+    }
+
+    function renderCharts() {
+        if (!NTRO.charts) return;
+        var C = NTRO.charts;
+        var muted = tokenColor("--text-muted", "#64748b");
+        var primary = tokenColor("--primary-600", "#2563eb");
+        var amber = tokenColor("--accent-amber", "#d97706");
+
+        C.spectralProfile($("#c-spectral"), {
+            bands: BANDS,
+            wavelengths: NM,
+            yLabel: "Reflectance",
+            title: "Surface reflectance per Sentinel-2 band",
+            series: [
+                { label: "Native 10 m", color: muted, values: LR_REF },
+                { label: "Super-resolved 2.5 m", color: primary, values: SR_REF },
+                { label: "Bicubic 2.5 m", color: amber, values: BC_REF, dashed: true }
+            ]
+        });
+
+        C.metricGauge($("#c-gauge-psnr"), {
+            value: 34.72, min: 20, max: 45, good: 30, excellent: 36, better: "higher",
+            label: "PSNR", unit: "dB", description: "Peak signal-to-noise"
+        });
+        C.metricGauge($("#c-gauge-ssim"), {
+            value: 0.9124, min: 0, max: 1, good: 0.85, excellent: 0.93, better: "higher",
+            label: "SSIM", unit: "", description: "Structural similarity"
+        });
+        C.metricGauge($("#c-gauge-sam"), {
+            value: 3.418, min: 0, max: 12, good: 5, excellent: 2.5, better: "lower",
+            label: "SAM", unit: "°", description: "Spectral angle mapper"
+        });
+        C.metricGauge($("#c-gauge-ergas"), {
+            value: 4.183, min: 0, max: 12, good: 6, excellent: 3, better: "lower",
+            label: "ERGAS", unit: "", description: "Relative dimensionless error"
+        });
+
+        var h = confidenceHistogram();
+        C.histogram($("#c-histogram"), {
+            edges: h.edges, counts: h.counts, color: primary,
+            title: "Per-pixel reconstruction confidence",
+            xLabel: "Confidence", yLabel: "Pixels"
+        });
+
+        C.classBar($("#c-classbar"), {
+            title: "NDVI thematic classes",
+            classes: [
+                { label: "Water", color: "#1d4ed8", fraction: 0.081 },
+                { label: "Bare / built", color: "#a16207", fraction: 0.194 },
+                { label: "Sparse vegetation", color: "#84cc16", fraction: 0.263 },
+                { label: "Moderate vegetation", color: "#16a34a", fraction: 0.341 },
+                { label: "Dense vegetation", color: "#14532d", fraction: 0.104 },
+                { label: "Cloud shadow", color: "#64748b", fraction: 0.017 }
+            ]
+        });
+
+        C.gradientLegend($("#c-ramp"), {
+            stops: VIRIDIS, min: -0.2, max: 0.9, label: "NDVI", unit: "index"
+        });
+
+        C.groupedBars($("#c-grouped"), {
+            categories: BANDS,
+            title: "Per-band PSNR — NTRO-SRM vs bicubic",
+            yLabel: "PSNR (dB)",
+            series: [
+                { label: "NTRO-SRM", color: primary, values: [36.1, 35.4, 34.8, 33.9, 34.6, 35.0, 35.7, 35.2, 33.1, 32.4] },
+                { label: "Bicubic", color: amber, values: [31.8, 31.2, 30.6, 29.9, 30.4, 30.8, 31.4, 31.0, 29.2, 28.7] }
+            ]
+        });
+
+        renderDegenerate();
+    }
+
+    var DEGENERATE = [
+        ["spectralProfile", "empty series", { bands: BANDS, series: [] }],
+        ["spectralProfile", "no bands", { bands: [], series: [{ label: "SR", values: SR_REF }] }],
+        ["spectralProfile", "single point", { bands: ["B08"], series: [{ label: "SR", values: [0.3086] }], yLabel: "Reflectance" }],
+        ["spectralProfile", "all zeros", { bands: BANDS, series: [{ label: "Zeroed", values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0] }], yLabel: "Reflectance" }],
+        ["spectralProfile", "all NaN", { bands: BANDS, series: [{ label: "Corrupt", values: [NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN] }] }],
+        ["spectralProfile", "NaN holes", { bands: BANDS, series: [{ label: "Partial", values: [0.03, NaN, 0.04, null, 0.22, 0.27, NaN, 0.30, 0.18, undefined] }], yLabel: "Reflectance" }],
+        ["spectralProfile", "config missing", null],
+        ["metricGauge", "value NaN", { value: NaN, min: 0, max: 1, good: 0.85, excellent: 0.93, label: "SSIM" }],
+        ["metricGauge", "min === max", { value: 5, min: 5, max: 5, label: "Flat range", unit: "dB" }],
+        ["metricGauge", "no thresholds", { value: 12.5, label: "Unrated", unit: "px" }],
+        ["metricGauge", "value below min", { value: -4, min: 0, max: 10, good: 6, excellent: 8, label: "Underflow" }],
+        ["histogram", "empty", { edges: [], counts: [] }],
+        ["histogram", "single bin", { edges: [0, 1], counts: [42] }],
+        ["histogram", "all zeros", { edges: [0, 0.25, 0.5, 0.75, 1], counts: [0, 0, 0, 0] }],
+        ["histogram", "min === max edges", { edges: [0.5, 0.5, 0.5], counts: [10, 20] }],
+        ["histogram", "NaN counts", { edges: [0, 1, 2, 3], counts: [NaN, 12, NaN] }],
+        ["classBar", "empty", { classes: [] }],
+        ["classBar", "all zero fractions", { classes: [{ label: "A", fraction: 0 }, { label: "B", fraction: 0 }] }],
+        ["classBar", "single class", { classes: [{ label: "Water", color: "#1d4ed8", fraction: 1 }] }],
+        ["classBar", "sub-3% slivers", {
+            classes: [
+                { label: "Dominant", color: "#16a34a", fraction: 0.955 },
+                { label: "Sliver A", color: "#dc2626", fraction: 0.021 },
+                { label: "Sliver B", color: "#d97706", fraction: 0.019 },
+                { label: "Trace", color: "#7c3aed", fraction: 0.005 }
+            ]
+        }],
+        ["gradientLegend", "no stops", { stops: [], min: 0, max: 1 }],
+        ["gradientLegend", "single stop, min === max", { stops: ["#2a788e"], min: 0.5, max: 0.5, label: "Flat", unit: "" }],
+        ["gradientLegend", "NaN bounds", { stops: VIRIDIS, min: NaN, max: NaN, label: "Unbounded" }],
+        ["groupedBars", "empty categories", { categories: [], series: [{ label: "A", values: [] }] }],
+        ["groupedBars", "single category", { categories: ["B08"], series: [{ label: "SRM", values: [35.7] }, { label: "Bicubic", values: [31.4] }] }],
+        ["groupedBars", "all zeros", { categories: ["a", "b", "c"], series: [{ label: "Zero", values: [0, 0, 0] }] }],
+        ["groupedBars", "all NaN", { categories: ["a", "b", "c"], series: [{ label: "NaN", values: [NaN, NaN, NaN] }] }],
+        ["groupedBars", "negative + positive", { categories: ["B02", "B03", "B04"], series: [{ label: "Δ PSNR", values: [-2.4, 0, 4.3] }], yLabel: "dB" }],
+        ["classBar", "null container", { classes: [{ label: "A", fraction: 1 }] }]   // driven with container null
+    ];
+
+    function renderDegenerate() {
+        var grid = $("#degenerate-grid");
+        grid.textContent = "";
+        DEGENERATE.forEach(function (spec, i) {
+            var fn = spec[0], caption = spec[1], config = spec[2];
+            var fig = document.createElement("figure");
+            fig.className = "chart-cell";
+            var cap = document.createElement("figcaption");
+            cap.textContent = fn + " — " + caption;
+            fig.appendChild(cap);
+            var host = document.createElement("div");
+            fig.appendChild(host);
+            grid.appendChild(fig);
+
+            var target = caption === "null container" ? null : host;
+            var out = NTRO.charts[fn](target, config);
+            if (target === null) {
+                host.className = "readout";
+                host.textContent = "returned " + String(out) + " for a null container (no throw)";
+            }
+        });
+        // A container selector string, and a garbage container, must both be survivable.
+        NTRO.charts.metricGauge("#no-such-element-anywhere", { value: 1, label: "Missing host" });
+        NTRO.charts.histogram(42, { edges: [0, 1], counts: [1] });
+    }
+
+    acts["charts-render"] = renderCharts;
+
+    /* =====================================================================
+       5. Inspector
+       ===================================================================== */
+
+    function basePayload() {
+        return {
+            lat: 18.523456, lon: 73.856743,
+            easting: 379142.6, northing: 2048873.2, crs: "EPSG:32643",
+            row: 512, col: 741,
+            band_names: BANDS.slice(),
+            wavelengths_nm: NM.slice(),
+            lr: { reflectance: LR_REF.slice(), row: 512, col: 741 },
+            sr: { reflectance: SR_REF.slice(), row: 2048, col: 2964 },
+            bicubic: { reflectance: BC_REF.slice() },
+            indices: [
+                { key: "ndvi", name: "NDVI", lr: 0.7521, sr: 0.7684, unit: "", class_label: "Dense vegetation", class_color: "#16a34a" },
+                { key: "ndwi", name: "NDWI", lr: -0.4188, sr: -0.4331, unit: "", class_label: "Non-water", class_color: "#0284c7" },
+                { key: "ndbi", name: "NDBI", lr: -0.2214, sr: -0.2402, unit: "", class_label: "Non-built", class_color: "#a16207" },
+                { key: "evi", name: "Enhanced Vegetation Index", lr: 0.5107, sr: 0.5288, unit: "", class_label: "High vigour", class_color: "#14532d" },
+                { key: "savi", name: "SAVI", lr: 0.4462, sr: 0.4571, unit: "L=0.5", class_label: "", class_color: "" }
+            ],
+            uncertainty: { confidence: 0.873, std: 0.0124, novelty: 0.2117, risk: "low" }
+        };
+    }
+
+    var INSPECTOR_CASES = [
+        ["Full payload", function () { return basePayload(); }],
+        ["uncertainty: null", function () { var p = basePayload(); p.uncertainty = null; return p; }],
+        ["indices: []", function () { var p = basePayload(); p.indices = []; return p; }],
+        ["NaNs in reflectance", function () {
+            var p = basePayload();
+            p.lr.reflectance = [NaN, 0.0562, NaN, 0.0985, NaN, 0.2683, 0.2871, NaN, 0.1846, NaN];
+            p.sr.reflectance = [0.0318, NaN, 0.0396, NaN, 0.2287, NaN, 0.2943, 0.3086, NaN, 0.0941];
+            p.bicubic = { reflectance: [NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN] };
+            p.indices[0].sr = NaN;
+            p.indices[1].lr = Infinity;
+            p.uncertainty = { confidence: NaN, std: NaN, novelty: NaN, risk: "unknowable" };
+            return p;
+        }],
+        ["High risk + no bicubic", function () {
+            var p = basePayload();
+            p.bicubic = null;
+            p.uncertainty = { confidence: 0.312, std: 0.0871, novelty: 0.7734, risk: "high" };
+            return p;
+        }],
+        ["Sparse payload (coords only)", function () {
+            return { lat: 12.9716, lon: 77.5946, band_names: [], indices: [], uncertainty: null };
+        }],
+        ["renderEmpty()", "empty"],
+        ["render(container, null)", function () { return null; }]
+    ];
+
+    function buildInspectorSlots() {
+        var grid = $("#insp-grid");
+        grid.textContent = "";
+        INSPECTOR_CASES.forEach(function (c, i) {
+            var slot = document.createElement("div");
+            slot.className = "insp-slot";
+            var h = document.createElement("h3");
+            h.textContent = (i + 1) + ". " + c[0];
+            var host = document.createElement("div");
+            host.id = "insp-host-" + i;
+            slot.appendChild(h);
+            slot.appendChild(host);
+            grid.appendChild(slot);
+        });
+    }
+
+    function renderInspector() {
+        if (!NTRO.inspector) return;
+        INSPECTOR_CASES.forEach(function (c, i) {
+            var host = document.getElementById("insp-host-" + i);
+            if (c[1] === "empty") NTRO.inspector.renderEmpty(host);
+            else NTRO.inspector.render(host, c[1]());
+        });
+        // Defensive paths: null container, and a message override on renderEmpty.
+        NTRO.inspector.render(null, basePayload());
+        NTRO.inspector.renderEmpty(null, "ignored");
+        NTRO.inspector.clear(null);
+    }
+
+    acts["insp-render"] = renderInspector;
+    acts["insp-clear"] = function () {
+        INSPECTOR_CASES.forEach(function (c, i) {
+            NTRO.inspector.clear(document.getElementById("insp-host-" + i));
+        });
+        NTRO.inspector.renderEmpty(document.getElementById("insp-host-0"),
+            "Cleared — press “render all” to repopulate every case.");
+    };
+
+    /* =====================================================================
+       6. Loupe (with an offline synthetic basemap)
+       ===================================================================== */
+
+    var map = null;
+    var loupeReadout = $("#loupe-readout");
+    var loupeMode = "normal";      // normal | none | throw
+    var CENTER = [18.5235, 73.8567];
+    var OVERLAY_BOUNDS = [[18.5105, 73.8395], [18.5365, 73.8739]];
+    var overlayUrl = null;
+
+    // A deterministic, network-free basemap. The 4 px hatch is deliberate: it is the
+    // finest structure on screen, so the loupe's magnification is judged by eye.
+    function makeTileLayer() {
+        var Synth = window.L.GridLayer.extend({
+            createTile: function (coords) {
+                var tile = document.createElement("canvas");
+                var size = this.getTileSize();
+                tile.width = size.x;
+                tile.height = size.y;
+                var g = tile.getContext("2d");
+                var wash = 210 + ((coords.x * 7 + coords.y * 13 + coords.z * 3) % 5) * 6;
+                g.fillStyle = "rgb(" + (wash - 14) + "," + wash + "," + (wash - 22) + ")";
+                g.fillRect(0, 0, size.x, size.y);
+
+                g.strokeStyle = "rgba(15,23,42,.10)";
+                g.lineWidth = 1;
+                for (var p = 0; p < size.x; p += 4) {
+                    g.beginPath();
+                    g.moveTo(p + 0.5, 0);
+                    g.lineTo(p + 0.5, size.y);
+                    g.stroke();
+                }
+                g.strokeStyle = "rgba(15,23,42,.22)";
+                for (var q = 0; q <= size.x; q += 64) {
+                    g.beginPath();
+                    g.moveTo(q + 0.5, 0); g.lineTo(q + 0.5, size.y);
+                    g.moveTo(0, q + 0.5); g.lineTo(size.x, q + 0.5);
+                    g.stroke();
+                }
+                g.strokeStyle = "rgba(15,23,42,.35)";
+                g.strokeRect(0.5, 0.5, size.x - 1, size.y - 1);
+                g.fillStyle = "rgba(15,23,42,.55)";
+                g.font = "10px monospace";
+                g.fillText(coords.z + "/" + coords.x + "/" + coords.y, 6, 14);
+                return tile;
+            }
+        });
+        return new Synth({ tileSize: 256, minZoom: 2, maxZoom: 24, maxNativeZoom: 24, attribution: "synthetic tiles" });
+    }
+
+    function overlayDataUrl() {
+        if (overlayUrl) return overlayUrl;
+        var c = document.createElement("canvas");
+        c.width = 256;
+        c.height = 256;
+        var g = c.getContext("2d");
+        var img = g.createImageData(256, 256);
+        for (var y = 0; y < 256; y++) {
+            for (var x = 0; x < 256; x++) {
+                // A chirp: spatial frequency rises left to right, so the loupe shows
+                // exactly where reconstruction stops resolving real structure.
+                var f = 0.02 + (x / 256) * 0.55;
+                var v = 0.5 + 0.5 * Math.sin(x * f) * Math.cos(y * f * 0.9);
+                var i = (y * 256 + x) * 4;
+                img.data[i] = Math.round(30 + v * 90);
+                img.data[i + 1] = Math.round(90 + v * 130);
+                img.data[i + 2] = Math.round(70 + v * 70);
+                img.data[i + 3] = 235;
+            }
+        }
+        g.putImageData(img, 0, 0);
+        overlayUrl = c.toDataURL("image/png");
+        return overlayUrl;
+    }
+
+    function makeImageOverlay() {
+        return window.L.imageOverlay(overlayDataUrl(), OVERLAY_BOUNDS, {
+            opacity: 0.9, interactive: false, className: "srm-overlay"
+        });
+    }
+
+    function buildLayers() {
+        if (loupeMode === "throw") throw new Error("bench: buildLayers() failed on purpose");
+        if (loupeMode === "none") return [];
+        return [makeTileLayer(), makeImageOverlay()];
+    }
+
+    function paintLoupe(note) {
+        if (!NTRO.loupe) return;
+        loupeReadout.textContent = [
+            "L present      " + !!window.L,
+            "map            " + (map ? "z" + map.getZoom() + "  " + map.getCenter().lat.toFixed(4) + ", " + map.getCenter().lng.toFixed(4) : "not created"),
+            "isEnabled()    " + NTRO.loupe.isEnabled(),
+            "buildLayers    " + loupeMode,
+            "note           " + (note || "hover the map to drive the loupe")
+        ].join("\n");
+    }
+
+    function initMap() {
+        if (!window.L) { paintLoupe("Leaflet did not load — every loupe method must no-op"); return; }
+        map = window.L.map("bench-map", {
+            center: CENTER, zoom: 14, zoomControl: true, attributionControl: false,
+            maxZoom: 22
+        });
+        makeTileLayer().addTo(map);
+        makeImageOverlay().addTo(map);
+        window.L.rectangle(OVERLAY_BOUNDS, { color: "#2563eb", weight: 1, fill: false, dashArray: "4 3" }).addTo(map);
+        paintLoupe("map ready");
+    }
+
+    acts["loupe-attach"] = function () {
+        if (!map) { paintLoupe("no map to attach to"); return; }
+        var ok = NTRO.loupe.attach(map, {
+            container: document.getElementById("bench-map"),
+            buildLayers: buildLayers,
+            zoomOffset: 3,
+            size: 220
+        });
+        paintLoupe("attach() -> " + ok);
+    };
+    acts["loupe-enable"] = function () { NTRO.loupe.enable(); paintLoupe("enable()"); };
+    acts["loupe-disable"] = function () { NTRO.loupe.disable(); paintLoupe("disable()"); };
+    acts["loupe-toggle"] = function () { paintLoupe("toggle() -> " + NTRO.loupe.toggle()); };
+    acts["loupe-refresh"] = function () { NTRO.loupe.refresh(); paintLoupe("refresh()"); };
+    acts["loupe-z2"] = function () { NTRO.loupe.setZoomOffset(2); paintLoupe("setZoomOffset(2)"); };
+    acts["loupe-z3"] = function () { NTRO.loupe.setZoomOffset(3); paintLoupe("setZoomOffset(3)"); };
+    acts["loupe-z5"] = function () { NTRO.loupe.setZoomOffset(5); paintLoupe("setZoomOffset(5)"); };
+    acts["loupe-znan"] = function () {
+        NTRO.loupe.setZoomOffset(NaN);
+        NTRO.loupe.setZoomOffset("banana");
+        paintLoupe("setZoomOffset(NaN) and (\"banana\") — both must be ignored");
+    };
+    acts["loupe-nolayers"] = function () {
+        loupeMode = loupeMode === "none" ? "normal" : "none";
+        NTRO.loupe.refresh();
+        paintLoupe("buildLayers now returns " + (loupeMode === "none" ? "[]" : "real layers"));
+    };
+    acts["loupe-throw"] = function () {
+        loupeMode = loupeMode === "throw" ? "normal" : "throw";
+        NTRO.loupe.refresh();
+        paintLoupe("buildLayers " + (loupeMode === "throw" ? "now throws" : "restored"));
+    };
+
+    /* =====================================================================
+       7. Wiring
+       ===================================================================== */
+
+    acts["diag-clear"] = function () {
+        BENCH.errors.length = 0;
+        BENCH.warns.length = 0;
+        diagLog.textContent = "";
+        paintTallies();
+    };
+
+    document.addEventListener("click", function (e) {
+        var btn = e.target.closest ? e.target.closest("[data-act]") : null;
+        if (!btn) return;
+        var act = btn.getAttribute("data-act");
+        var fn = acts[act];
+        if (!fn) { record("err", 'No bench action bound to "' + act + '"'); return; }
+        try {
+            fn();
+        } catch (err) {
+            record("err", "Bench action " + act + " threw: " + (err && err.message));
+        }
+    });
+
+    function boot() {
+        if (NTRO.theme) {
+            subscribeTheme();
+            NTRO.theme.init({ toggleSelector: "[data-ntro-theme-toggle]" });
+            paintTheme();
+        }
+        registerShortcuts();
+        renderCharts();
+        buildInspectorSlots();
+        renderInspector();
+        initMap();
+        paintToast("idle");
+        paintTallies();
+        append(diagLog, "ok", "Bench booted. " + (window.matchMedia("(prefers-reduced-motion: reduce)").matches
+            ? "Reduced motion is ON — every module animation must be suppressed."
+            : "Reduced motion is OFF."));
+        BENCH.ready = true;
+    }
+
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+    else boot();
+
+})(window, document);
+</script>
+</body>
+</html>

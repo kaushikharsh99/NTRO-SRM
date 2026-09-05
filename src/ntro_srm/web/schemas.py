@@ -120,6 +120,27 @@ class InferenceRequest(BaseModel):
     overlap: int = Field(default=32, ge=8, le=64, description="Sliding window overlap in pixels")
     clamp_output: bool = Field(default=True, description="Clamp reflectance to [0.0, 1.0]")
     model: str = Field(default="lite", description="Model variant: 'lite' or 'swin2sr'")
+    run_analysis: bool = Field(
+        default=True,
+        description="Run quality assessment, uncertainty estimation and thematic products",
+    )
+    run_wald_validation: bool = Field(
+        default=True,
+        description=(
+            "Run Wald's synthesis protocol (10m -> 40m -> 10m) for quantitative accuracy "
+            "assessment. Costs one additional forward pass at 1/16 of the area."
+        ),
+    )
+    uncertainty_members: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=8,
+        description=(
+            "Test-time-augmentation ensemble size for uncertainty estimation. Each member is a "
+            "full-resolution forward pass. None selects the automatic policy (4 for SEN2SR-Lite, "
+            "0 for the Vision Transformer); 0 uses the free novelty-only estimator."
+        ),
+    )
 
 
 class JobProgress(BaseModel):
@@ -150,3 +171,87 @@ class SystemInfoResponse(BaseModel):
     checkpoint_ready: bool = True
     active_provider: str = "Copernicus Data Space (CDSE)"
     cdse_configured: bool = False
+
+
+class JobSummary(BaseModel):
+    """Compact record of a processing job for the session history panel."""
+
+    job_id: str
+    status: str
+    created_at: float
+    updated_at: float
+    progress_percent: int = 0
+    scene_id: Optional[str] = None
+    model: Optional[str] = None
+    output_shape: Optional[list[int]] = None
+    processing_time_sec: Optional[float] = None
+    leaflet_bounds: Optional[list[list[float]]] = None
+    verdict: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class JobListResponse(BaseModel):
+    """Recent processing jobs, newest first."""
+
+    jobs: list[JobSummary] = Field(default_factory=list)
+    total: int = 0
+
+
+class BandSample(BaseModel):
+    """Reflectance spectrum sampled at one pixel of a raster."""
+
+    reflectance: list[Optional[float]] = Field(default_factory=list)
+    row: int = 0
+    col: int = 0
+
+
+class IndexSample(BaseModel):
+    """Spectral index evaluated at a probed pixel, before and after super-resolution."""
+
+    key: str
+    name: str
+    lr: Optional[float] = None
+    sr: Optional[float] = None
+    unit: str = ""
+    class_label: Optional[str] = None
+    class_color: Optional[str] = None
+
+
+class PixelUncertainty(BaseModel):
+    """Per-pixel reconstruction reliability read-out."""
+
+    confidence: Optional[float] = None
+    std: Optional[float] = None
+    novelty: Optional[float] = None
+    risk: Optional[str] = None
+
+
+class PixelProbeResponse(BaseModel):
+    """Full spectral, thematic and reliability read-out at a clicked map coordinate."""
+
+    lat: float
+    lon: float
+    easting: float
+    northing: float
+    crs: str
+    row: int
+    col: int
+    band_names: list[str] = Field(default_factory=list)
+    wavelengths_nm: list[float] = Field(default_factory=list)
+    lr: BandSample
+    sr: BandSample
+    bicubic: Optional[BandSample] = None
+    indices: list[IndexSample] = Field(default_factory=list)
+    uncertainty: Optional[PixelUncertainty] = None
+
+
+class HealthResponse(BaseModel):
+    """Liveness and readiness probe for the web application."""
+
+    status: str = "ok"
+    version: str
+    device: str
+    cuda_available: bool
+    checkpoints_ready: bool
+    catalog_provider: str
+    active_jobs: int = 0

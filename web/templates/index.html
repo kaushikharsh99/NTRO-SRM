@@ -3,28 +3,37 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light dark">
+    <meta name="description" content="NTRO-SRM — deep-learning super-resolution mapping of Sentinel-2 Level-2A imagery from 10 m to 2.5 m ground sampling distance, with quantitative accuracy assessment and uncertainty reporting.">
     <title>NTRO-SRM — Sentinel-2 Multi-Spectral Super-Resolution Mapping</title>
-    
+
+    <!-- Apply the stored colour theme before first paint to avoid a flash -->
+    <script src="/static/js/modules/theme.js?v=4.0"></script>
+    <script>try { window.NTRO && NTRO.theme && NTRO.theme.applyStoredEarly(); } catch (e) {}</script>
+
     <!-- Local Leaflet Assets -->
     <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
     <script src="/static/vendor/leaflet/leaflet.js"></script>
-    
+
     <!-- Modern GIS Typography -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
     <!-- Application Styling -->
-    <link rel="stylesheet" href="/static/css/app.css?v=3.3">
+    <link rel="stylesheet" href="/static/css/app.css?v=4.0">
+    <link rel="stylesheet" href="/static/css/enhance.css?v=4.0">
 </head>
 <body>
+    <a class="skip-link" href="#sidebar-panel">Skip to controls</a>
+
     <div class="app-container">
         <!-- Top Navigation / Status Header -->
         <header class="app-header">
             <div class="header-left">
                 <div class="app-logo">
                     <div class="logo-mark">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
                     </div>
                     <div>
                         <div class="logo-title-row">
@@ -38,21 +47,21 @@
 
             <div class="header-center">
                 <!-- Hardware & Pipeline Status Chips -->
-                <div class="status-chip">
+                <div class="status-chip" title="Compute device used for neural inference">
                     <span class="status-indicator {% if sys_info.cuda_available %}indicator-active{% else %}indicator-warn{% endif %}"></span>
                     <span class="chip-label">GPU:</span>
                     <span class="chip-val">{{ sys_info.device_name }}</span>
                     <span class="chip-badge">{% if sys_info.cuda_available %}CUDA READY{% else %}CPU{% endif %}</span>
                 </div>
 
-                <div class="status-chip">
+                <div class="status-chip" title="Active super-resolution model">
                     <span class="status-indicator indicator-active"></span>
                     <span class="chip-label">Model:</span>
-                    <span class="chip-val">{{ sys_info.model_variant }}</span>
+                    <span class="chip-val" id="chip-model-name">{{ sys_info.model_variant }}</span>
                     <span class="chip-badge badge-blue">10 BANDS</span>
                 </div>
 
-                <div class="status-chip">
+                <div class="status-chip" title="Sentinel-2 Level-2A catalogue currently in use">
                     <span class="status-indicator {% if sys_info.cdse_configured %}indicator-active{% else %}indicator-warn{% endif %}"></span>
                     <span class="chip-label">Catalog:</span>
                     <span class="chip-val">{% if sys_info.cdse_configured %}Copernicus CDSE{% else %}AWS STAC{% endif %}</span>
@@ -60,15 +69,30 @@
             </div>
 
             <div class="header-right">
-                <button id="btn-load-demo" class="btn btn-secondary" title="Load pre-downloaded Mountain Lake Sentinel-2 sample scene">
-                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <button id="btn-load-demo" class="btn btn-secondary" title="Load the pre-downloaded Mountain Lake Sentinel-2 sample scene (Shift+S)">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                     Load Sample Scene
+                </button>
+
+                <span class="header-divider" aria-hidden="true"></span>
+
+                <button id="btn-history" class="icon-btn" type="button" aria-haspopup="dialog" aria-expanded="false" title="Session job history (H)">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>
+                    <span class="icon-btn-label">History</span>
+                </button>
+
+                <button id="btn-theme" class="icon-btn" type="button" title="Switch colour theme (T)">
+                    <span class="icon-btn-label">Theme</span>
+                </button>
+
+                <button id="btn-help" class="icon-btn" type="button" title="Keyboard shortcuts (?)" aria-label="Show keyboard shortcuts">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"></path><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
                 </button>
             </div>
         </header>
 
         <!-- Main Workspace: Map + Control Sidebar -->
-        <main class="app-main">
+        <main class="app-main" id="app-main">
             <!-- Left / Center: Interactive Leaflet Map Viewport -->
             <div class="map-viewport" id="map-viewport">
                 <div id="map" class="map-element"></div>
@@ -84,7 +108,7 @@
 
                 <!-- Interactive Comparison Split Slider -->
                 <div id="slider-container" class="slider-container hidden">
-                    <div id="slider-divider" class="slider-divider">
+                    <div id="slider-divider" class="slider-divider" role="separator" aria-label="Comparison split position" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
                         <div class="slider-handle">
                             <span class="slider-arrow left">&ltrif;</span>
                             <span class="slider-label">SWIPE</span>
@@ -103,39 +127,55 @@
                     </div>
                 </div>
 
-                <!-- Floating Top Controls: Color Mode & Views -->
+                <!-- Floating Top Controls -->
                 <div class="map-floating-controls">
                     <div class="control-group">
-                        <span class="control-group-title">Color Mode:</span>
-                        <button id="btn-mode-rgb" class="btn-toggle active" data-mode="rgb" title="True Color (B04-Red, B03-Green, B02-Blue)">Natural RGB</button>
-                        <button id="btn-mode-cir" class="btn-toggle" data-mode="cir" title="Color Infrared (B08-NIR, B04-Red, B03-Green)">Infrared (CIR)</button>
+                        <label class="control-group-title" for="select-layer">Layer:</label>
+                        <select id="select-layer" class="layer-select" title="Band composite, spectral index, or analysis raster to display">
+                            <optgroup label="Composites">
+                                <option value="rgb" selected>Natural colour (B04/B03/B02)</option>
+                                <option value="cir">Colour infrared (B08/B04/B03)</option>
+                            </optgroup>
+                        </select>
+                        <span id="layer-hint" class="layer-hint">True colour — as the human eye would see it</span>
                     </div>
+
                     <div class="control-group" id="view-mode-group" style="display: none;">
                         <span class="control-group-title">View:</span>
-                        <button id="btn-view-split" class="btn-toggle active" title="Interactive split swipe comparison">Swipe Split</button>
-                        <button id="btn-view-lr" class="btn-toggle" title="Show 10m Native Sentinel-2 Only">10m Native</button>
-                        <button id="btn-view-sr" class="btn-toggle" title="Show 2.5m Super-Resolved Only">2.5m SR</button>
-                        <button id="btn-view-blend" class="btn-toggle" title="Continuous opacity blend between 10m and 2.5m">Blend</button>
+                        <button id="btn-view-split" class="btn-toggle active" title="Interactive split swipe comparison (1)">Swipe Split</button>
+                        <button id="btn-view-lr" class="btn-toggle" title="Show 10m Native Sentinel-2 only (2)">10m Native</button>
+                        <button id="btn-view-sr" class="btn-toggle" title="Show 2.5m Super-Resolved only (3)">2.5m SR</button>
+                        <button id="btn-view-blend" class="btn-toggle" title="Continuous opacity blend between 10m and 2.5m (4)">Blend</button>
                     </div>
+
                     <div class="control-group" id="blend-slider-group" style="display: none; align-items: center; gap: 6px;">
-                        <span class="control-group-title" style="font-size: 11px;">SR Opacity:</span>
+                        <label class="control-group-title" for="sr-opacity-slider" style="font-size: 11px;">SR Opacity:</label>
                         <input type="range" id="sr-opacity-slider" min="0" max="100" value="100" class="mini-range">
                         <span id="sr-opacity-val" style="font-size: 11px; color: var(--primary-600); font-weight: 700; width: 36px;">100%</span>
                     </div>
+
                     <div class="control-group" id="comparison-toggle-group" style="display: none;">
-                        <span class="control-group-title">Left Side:</span>
+                        <label class="control-group-title" for="select-left-layer">Left Side:</label>
                         <select id="select-left-layer" class="select-sm">
                             <option value="lr" selected>Native 10m S2</option>
                             <option value="bicubic">Bicubic 2.5m Baseline</option>
                         </select>
-                        <button id="btn-zoom-patch" class="btn-toggle btn-icon-text" title="Center map directly onto the loaded patch">
-                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                        <button id="btn-zoom-patch" class="btn-toggle btn-icon-text" title="Centre the map on the loaded patch (Z)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                             Zoom to Patch
+                        </button>
+                        <button id="btn-loupe" class="btn-toggle" type="button" aria-pressed="false" title="Magnifier loupe — inspect fine detail under the cursor (L)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><line x1="16" y1="16" x2="21" y2="21"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+                            Loupe
+                        </button>
+                        <button id="btn-inspect" class="btn-toggle" type="button" aria-pressed="false" title="Spectral probe — click the patch to read its 10-band signature (I)">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line></svg>
+                            Probe
                         </button>
                     </div>
                 </div>
 
-                <!-- Floating Quick Locations Bar (Directly over the map for instant access) -->
+                <!-- Floating Quick Locations Bar -->
                 <div class="map-floating-locations">
                     <span class="location-group-title">📍 Quick Locations:</span>
                     <button type="button" class="preset-chip active" data-lat="37.4255" data-lon="-80.5723" data-name="Mountain Lake (Forest/Lake)">
@@ -156,6 +196,23 @@
                     <button type="button" class="preset-chip" data-lat="39.0968" data-lon="-120.0324" data-name="Lake Tahoe (Alpine Lake)">
                         🏔️ Lake Tahoe
                     </button>
+                    <button type="button" class="preset-chip" data-lat="28.6139" data-lon="77.2090" data-name="New Delhi (Dense Urban)">
+                        🏛️ New Delhi
+                    </button>
+                    <button type="button" class="preset-chip" data-lat="22.5726" data-lon="88.3639" data-name="Kolkata (River Delta / Urban)">
+                        🌊 Kolkata
+                    </button>
+                </div>
+
+                <!-- Colour legend for index and analysis layers -->
+                <div class="map-legend" id="map-legend" hidden>
+                    <div class="map-legend-head">
+                        <span class="map-legend-title" id="legend-title">Legend</span>
+                        <span class="map-legend-key" id="legend-key"></span>
+                    </div>
+                    <div class="map-legend-formula" id="legend-formula"></div>
+                    <div id="legend-gradient"></div>
+                    <div class="map-legend-classes" id="legend-classes"></div>
                 </div>
 
                 <!-- Bottom Status Bar for Mouse Coords -->
@@ -163,51 +220,53 @@
                     <span id="coord-display">Lat: --.----, Lon: --.---- &bull; Zoom: --</span>
                     <span id="aoi-display-status">Ready &bull; Click "Draw Box" or select a quick location to upscale</span>
                 </div>
+
+                <button id="btn-sidebar-toggle" class="sidebar-toggle" type="button" aria-expanded="true" aria-controls="sidebar-panel" title="Collapse or expand the control panel (\)">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
             </div>
 
-            <!-- Right: Sleek Control & Analysis Panel -->
-            <aside class="sidebar-panel">
-                <!-- Navigation Tabs: Select Patch | Upload GeoTIFF | STAC Catalog -->
-                <div class="sidebar-tabs">
-                    <button class="tab-btn active" data-tab="tab-select" id="tab-btn-select">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="12" cy="12" r="3"></circle></svg>
+            <!-- Right: Control & Analysis Panel -->
+            <aside class="sidebar-panel" id="sidebar-panel" aria-label="Processing controls and analysis">
+                <!-- Navigation Tabs -->
+                <div class="sidebar-tabs" role="tablist" aria-label="Input source">
+                    <button class="tab-btn active" data-tab="tab-select" id="tab-btn-select" role="tab" aria-selected="true" aria-controls="tab-select">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="12" cy="12" r="3"></circle></svg>
                         <span>1. Select AOI</span>
                     </button>
-                    <button class="tab-btn" data-tab="tab-upload" id="tab-btn-upload">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    <button class="tab-btn" data-tab="tab-upload" id="tab-btn-upload" role="tab" aria-selected="false" aria-controls="tab-upload">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                         <span>2. Upload GeoTIFF</span>
                     </button>
-                    <button class="tab-btn" data-tab="tab-catalog" id="tab-btn-catalog">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                    <button class="tab-btn" data-tab="tab-catalog" id="tab-btn-catalog" role="tab" aria-selected="false" aria-controls="tab-catalog">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                         <span>3. S2 Catalog</span>
                     </button>
                 </div>
 
                 <!-- Tab 1: Patch Selection & Tools -->
-                <div id="tab-select" class="tab-content active">
+                <div id="tab-select" class="tab-content active" role="tabpanel" aria-labelledby="tab-btn-select">
                     <div class="sidebar-card">
                         <div class="card-header">
                             <span class="card-title-text">Area of Interest (AOI)</span>
                             <span id="aoi-badge" class="badge badge-gray">No Patch Selected</span>
                         </div>
                         <div class="card-body">
-                            <!-- Quick Action Buttons -->
                             <div class="quick-action-grid">
-                                <button id="btn-draw-aoi" type="button" class="btn btn-primary btn-draw">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+                                <button id="btn-draw-aoi" type="button" class="btn btn-primary btn-draw" title="Drag a rectangle on the map (D)">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
                                     Draw Box
                                 </button>
-                                <button id="btn-center-patch" type="button" class="btn btn-secondary">
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
+                                <button id="btn-center-patch" type="button" class="btn btn-secondary" title="Create a 1.5 km patch at the current map centre (C)">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><circle cx="12" cy="12" r="3"></circle></svg>
                                     Center Box
                                 </button>
-                                <button id="btn-clear-aoi" type="button" class="btn btn-ghost" title="Clear Area">
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
+                                <button id="btn-clear-aoi" type="button" class="btn btn-ghost" title="Clear the selected area (Escape)">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
                                     Clear
                                 </button>
                             </div>
 
-                            <!-- Preset Locations Bar -->
                             <div class="presets-section">
                                 <span class="section-label">Quick Location Presets:</span>
                                 <div class="preset-chips">
@@ -229,10 +288,15 @@
                                     <button type="button" class="preset-chip" data-lat="39.0968" data-lon="-120.0324" data-name="Lake Tahoe (Alpine Lake)">
                                         🏔️ Lake Tahoe
                                     </button>
+                                    <button type="button" class="preset-chip" data-lat="28.6139" data-lon="77.2090" data-name="New Delhi (Dense Urban)">
+                                        🏛️ New Delhi
+                                    </button>
+                                    <button type="button" class="preset-chip" data-lat="22.5726" data-lon="88.3639" data-name="Kolkata (River Delta / Urban)">
+                                        🌊 Kolkata
+                                    </button>
                                 </div>
                             </div>
 
-                            <!-- Patch Geometry Metrics -->
                             <div class="aoi-meta-grid">
                                 <div class="meta-item">
                                     <span class="meta-label">Center:</span>
@@ -252,28 +316,27 @@
                                 </div>
                             </div>
 
-                            <div id="aoi-warning" class="alert alert-warning hidden">
+                            <div id="aoi-warning" class="alert alert-warning hidden" role="alert">
                                 Selected area exceeds 512&times;512 pixels limit. Please draw a smaller region (~5 km max).
                             </div>
 
-                            <!-- Manual Coordinate Accordion -->
                             <details class="coord-details">
                                 <summary class="coord-summary">Manual Coordinates (WGS84)</summary>
                                 <div class="coord-inputs-grid">
                                     <div class="form-group">
-                                        <label>Min Lon (West):</label>
+                                        <label for="coord-min-lon">Min Lon (West):</label>
                                         <input type="number" step="0.001" id="coord-min-lon" class="form-control" placeholder="-80.59">
                                     </div>
                                     <div class="form-group">
-                                        <label>Min Lat (South):</label>
+                                        <label for="coord-min-lat">Min Lat (South):</label>
                                         <input type="number" step="0.001" id="coord-min-lat" class="form-control" placeholder="37.41">
                                     </div>
                                     <div class="form-group">
-                                        <label>Max Lon (East):</label>
+                                        <label for="coord-max-lon">Max Lon (East):</label>
                                         <input type="number" step="0.001" id="coord-max-lon" class="form-control" placeholder="-80.55">
                                     </div>
                                     <div class="form-group">
-                                        <label>Max Lat (North):</label>
+                                        <label for="coord-max-lat">Max Lat (North):</label>
                                         <input type="number" step="0.001" id="coord-max-lat" class="form-control" placeholder="37.44">
                                     </div>
                                 </div>
@@ -284,19 +347,18 @@
                 </div>
 
                 <!-- Tab 2: Upload GeoTIFF Patch -->
-                <div id="tab-upload" class="tab-content">
+                <div id="tab-upload" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-upload">
                     <div class="sidebar-card">
                         <div class="card-header">
                             <span class="card-title-text">Direct GeoTIFF Upload</span>
                             <span class="badge badge-blue">Local File</span>
                         </div>
                         <div class="card-body">
-                            <!-- Drag and Drop Dropzone -->
-                            <div id="upload-dropzone" class="upload-dropzone">
+                            <div id="upload-dropzone" class="upload-dropzone" role="button" tabindex="0" aria-label="Choose or drop a GeoTIFF file to super-resolve">
                                 <input type="file" id="file-upload-input" accept=".tif,.tiff" class="file-hidden-input">
                                 <div class="dropzone-inner">
                                     <div class="upload-icon-circle">
-                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
                                     </div>
                                     <div class="dropzone-text-primary">Drag &amp; drop your GeoTIFF here</div>
                                     <div class="dropzone-text-sub">or click to browse from disk</div>
@@ -304,7 +366,6 @@
                                 </div>
                             </div>
 
-                            <!-- Uploaded File Summary (when selected) -->
                             <div id="upload-file-card" class="upload-file-card hidden">
                                 <div class="file-info-row">
                                     <span class="file-name" id="upload-filename">sample.tif</span>
@@ -324,8 +385,8 @@
                     </div>
                 </div>
 
-                <!-- Tab 3: Sentinel-2 STAC Catalog (Optional Search) -->
-                <div id="tab-catalog" class="tab-content">
+                <!-- Tab 3: Sentinel-2 STAC Catalog -->
+                <div id="tab-catalog" class="tab-content" role="tabpanel" aria-labelledby="tab-btn-catalog">
                     <div class="sidebar-card">
                         <div class="card-header">
                             <span class="card-title-text">Sentinel-2 L2A Catalog</span>
@@ -354,11 +415,10 @@
                                 <input type="range" id="cloud-cover" min="0" max="100" value="20" class="range-slider">
                             </div>
                             <button id="btn-search-scenes" type="button" class="btn btn-secondary btn-block">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                                 Search Catalog
                             </button>
 
-                            <!-- Discovered Scenes -->
                             <div id="search-results-container" class="search-results-container">
                                 <div id="search-placeholder" class="text-muted text-center py-2">
                                     Click Search to discover recent cloud-free scenes.
@@ -416,13 +476,48 @@
                                 </div>
                             </label>
                         </div>
+
+                        <!-- Scientific validation options -->
+                        <details class="analysis-options" id="analysis-options">
+                            <summary>Validation &amp; uncertainty options</summary>
+
+                            <div class="option-row">
+                                <input type="checkbox" id="opt-analysis" checked>
+                                <span class="option-text">
+                                    <label class="option-title" for="opt-analysis">Run quality assessment</label>
+                                    <span class="option-desc">Radiometric consistency, spectral indices and the downloadable QA report.</span>
+                                </span>
+                            </div>
+
+                            <div class="option-row">
+                                <input type="checkbox" id="opt-wald" checked>
+                                <span class="option-text">
+                                    <label class="option-title" for="opt-wald">Wald synthesis validation</label>
+                                    <span class="option-desc">Degrades the observation to 40 m, reconstructs it, and scores the result against the real 10 m image. One extra forward pass at 1/16 area.</span>
+                                </span>
+                            </div>
+
+                            <div class="option-row">
+                                <span class="option-text" style="flex: 1;">
+                                    <label class="option-title" for="opt-ensemble">Uncertainty ensemble</label>
+                                    <span class="option-desc">Test-time augmentation members. Each one is a full-resolution forward pass.</span>
+                                </span>
+                                <select id="opt-ensemble" title="Test-time-augmentation ensemble size">
+                                    <option value="auto" selected>Auto</option>
+                                    <option value="0">Off (free estimate)</option>
+                                    <option value="2">2 members</option>
+                                    <option value="4">4 members</option>
+                                    <option value="8">8 members</option>
+                                </select>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
-                <!-- Primary Call to Action: Upscale Button -->
+                <!-- Primary Call to Action -->
                 <div class="upscale-action-card" id="upscale-action-card">
                     <button id="btn-run-sr" type="button" class="btn btn-accent btn-block btn-lg" disabled>
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
                         <span>UPSCALE PATCH TO 2.5m</span>
                     </button>
                     <div class="upscale-explainer">
@@ -432,9 +527,10 @@
                 </div>
 
                 <!-- Live Progress Tracking -->
-                <div id="progress-card" class="sidebar-card progress-card hidden">
+                <div id="progress-card" class="sidebar-card progress-card hidden" aria-live="polite">
                     <div class="card-header">
                         <span class="card-title-text">Processing Pipeline</span>
+                        <span class="progress-timer" id="progress-timer">0.0 s</span>
                         <span id="progress-percent-text" class="badge badge-accent">0%</span>
                     </div>
                     <div class="card-body">
@@ -449,75 +545,107 @@
                             <li id="step-stream" class="step-item">&bull; 2. Radiometric Preprocessing (10 Bands)</li>
                             <li id="step-model" class="step-item">&bull; 3. Neural Super-Resolution Execution</li>
                             <li id="step-geotiff" class="step-item">&bull; 4. Georeferenced GeoTIFF Export (2.5m)</li>
-                            <li id="step-visual" class="step-item">&bull; 5. Dual-Layer Interactive Overlays Ready</li>
+                            <li id="step-qa" class="step-item">&bull; 5. Accuracy, Uncertainty &amp; Thematic Products</li>
+                            <li id="step-visual" class="step-item">&bull; 6. Dual-Layer Interactive Overlays Ready</li>
                         </ul>
                     </div>
                 </div>
 
-                <!-- Section 4: Results & Downloads -->
+                <!-- Results & Analysis workspace -->
                 <div id="results-card" class="sidebar-card results-card hidden">
                     <div class="card-header">
                         <div class="card-title-text text-success">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>
                             Super-Resolution Complete
                         </div>
                         <span class="badge badge-success">2.5m GSD Ready</span>
                     </div>
                     <div class="card-body">
-                        <!-- Scientific Notice -->
-                        <div class="scientific-notice">
-                            <strong>Notice:</strong> 2.5m imagery is a neural super-resolution reconstruction. High-frequency spatial detail is model-inferred and is not directly observed by Sentinel-2. Physical spectral fidelity is calibrated to Sentinel-2 surface reflectance.
+                        <div class="result-tabs" role="tablist" aria-label="Result views">
+                            <button class="result-tab" id="rtab-product" role="tab" aria-selected="true" aria-controls="rpane-product" data-pane="rpane-product">Product</button>
+                            <button class="result-tab" id="rtab-quality" role="tab" aria-selected="false" aria-controls="rpane-quality" data-pane="rpane-quality">Quality</button>
+                            <button class="result-tab" id="rtab-apps" role="tab" aria-selected="false" aria-controls="rpane-apps" data-pane="rpane-apps">Applications</button>
+                            <button class="result-tab" id="rtab-probe" role="tab" aria-selected="false" aria-controls="rpane-probe" data-pane="rpane-probe">Probe</button>
                         </div>
 
-                        <div class="results-table">
-                            <div class="result-row">
-                                <span class="r-label">Model Architecture:</span>
-                                <span id="res-model" class="r-val highlight">SEN2SR-Lite</span>
+                        <!-- Pane: Product -->
+                        <div class="result-pane" id="rpane-product" role="tabpanel" aria-labelledby="rtab-product">
+                            <div class="scientific-notice">
+                                <strong>Notice:</strong> 2.5m imagery is a neural super-resolution reconstruction. High-frequency spatial detail is model-inferred and is not directly observed by Sentinel-2. Physical spectral fidelity is calibrated to Sentinel-2 surface reflectance.
                             </div>
-                            <div class="result-row">
-                                <span class="r-label">Native Sentinel-2 GSD:</span>
-                                <span class="r-val">10.0 meters</span>
+
+                            <div class="results-table">
+                                <div class="result-row">
+                                    <span class="r-label">Model Architecture:</span>
+                                    <span id="res-model" class="r-val highlight">SEN2SR-Lite</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Native Sentinel-2 GSD:</span>
+                                    <span class="r-val">10.0 meters</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Output Super-Resolved GSD:</span>
+                                    <span class="r-val highlight">2.50 meters (4&times;)</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Output Grid:</span>
+                                    <span id="res-grid" class="r-val font-mono">--</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Preserved Multi-Spectral Bands:</span>
+                                    <span class="r-val">10 Bands [B02..B12]</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Coordinate Reference System:</span>
+                                    <span id="res-crs" class="r-val font-mono">EPSG:32617</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Inference Execution Time:</span>
+                                    <span id="res-time" class="r-val">-- s</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Peak GPU VRAM:</span>
+                                    <span id="res-vram" class="r-val font-mono">-- MB</span>
+                                </div>
+                                <div class="result-row">
+                                    <span class="r-label">Compute Device:</span>
+                                    <span id="res-device" class="r-val">{{ sys_info.device_name }}</span>
+                                </div>
                             </div>
-                            <div class="result-row">
-                                <span class="r-label">Output Super-Resolved GSD:</span>
-                                <span class="r-val highlight">2.50 meters (4&times;)</span>
-                            </div>
-                            <div class="result-row">
-                                <span class="r-label">Preserved Multi-Spectral Bands:</span>
-                                <span class="r-val">10 Bands [B02..B12]</span>
-                            </div>
-                            <div class="result-row">
-                                <span class="r-label">Coordinate Reference System:</span>
-                                <span id="res-crs" class="r-val font-mono">EPSG:32617</span>
-                            </div>
-                            <div class="result-row">
-                                <span class="r-label">Inference Execution Time:</span>
-                                <span id="res-time" class="r-val">-- s</span>
-                            </div>
-                            <div class="result-row">
-                                <span class="r-label">Peak GPU VRAM:</span>
-                                <span id="res-vram" class="r-val font-mono">-- MB</span>
-                            </div>
-                            <div class="result-row">
-                                <span class="r-label">Compute Device:</span>
-                                <span id="res-device" class="r-val">{{ sys_info.device_name }}</span>
+
+                            <div class="download-actions">
+                                <a id="btn-download-geotiff" class="btn btn-primary btn-block btn-download" href="#" download>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                                    Download 10-Band 2.5m GeoTIFF
+                                </a>
+                                <div class="download-subrow">
+                                    <a id="btn-download-native" class="btn btn-secondary btn-sm flex-1" href="#" download>Native 10m GeoTIFF</a>
+                                    <a id="btn-download-confidence" class="btn btn-secondary btn-sm flex-1" href="#" download>Confidence GeoTIFF</a>
+                                </div>
+                                <div class="download-subrow">
+                                    <a id="btn-download-rgb" class="btn btn-secondary btn-sm flex-1" href="#" download>RGB (PNG)</a>
+                                    <a id="btn-download-cir" class="btn btn-secondary btn-sm flex-1" href="#" download>CIR (PNG)</a>
+                                </div>
+                                <div class="download-subrow">
+                                    <a id="btn-download-report" class="btn btn-secondary btn-sm flex-1" href="#" download>QA report (JSON)</a>
+                                    <a id="btn-download-report-md" class="btn btn-secondary btn-sm flex-1" href="#" download>QA report (Markdown)</a>
+                                </div>
                             </div>
                         </div>
 
-                        <!-- Downloads Action Buttons -->
-                        <div class="download-actions">
-                            <a id="btn-download-geotiff" class="btn btn-primary btn-block btn-download" href="#" download>
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-                                Download 10-Band 2.5m GeoTIFF
-                            </a>
-                            <div class="download-subrow">
-                                <a id="btn-download-rgb" class="btn btn-secondary btn-sm flex-1" href="#" download>
-                                    Download RGB (PNG)
-                                </a>
-                                <a id="btn-download-cir" class="btn btn-secondary btn-sm flex-1" href="#" download>
-                                    Download CIR (PNG)
-                                </a>
-                            </div>
+                        <!-- Pane: Quality -->
+                        <div class="result-pane" id="rpane-quality" role="tabpanel" aria-labelledby="rtab-quality" hidden>
+                            <div id="quality-content"></div>
+                        </div>
+
+                        <!-- Pane: Applications -->
+                        <div class="result-pane" id="rpane-apps" role="tabpanel" aria-labelledby="rtab-apps" hidden>
+                            <div id="apps-content"></div>
+                        </div>
+
+                        <!-- Pane: Probe -->
+                        <div class="result-pane" id="rpane-probe" role="tabpanel" aria-labelledby="rtab-probe" hidden>
+                            <div id="probe-content"></div>
                         </div>
                     </div>
                 </div>
@@ -525,7 +653,26 @@
         </main>
     </div>
 
+    <!-- Session job history drawer -->
+    <div class="drawer-scrim" id="history-scrim" hidden></div>
+    <aside class="history-drawer" id="history-drawer" role="dialog" aria-modal="true" aria-labelledby="history-drawer-title" hidden>
+        <div class="drawer-head">
+            <span class="drawer-title" id="history-drawer-title">Session job history</span>
+            <button class="icon-btn" type="button" id="btn-history-close" aria-label="Close job history">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="18" x2="18" y2="6"></line></svg>
+            </button>
+        </div>
+        <div class="drawer-body" id="history-body"></div>
+    </aside>
+
+    <!-- UI modules (zero dependency, self-styling) -->
+    <script src="/static/js/modules/toast.js?v=4.0"></script>
+    <script src="/static/js/modules/charts.js?v=4.0"></script>
+    <script src="/static/js/modules/shortcuts.js?v=4.0"></script>
+    <script src="/static/js/modules/loupe.js?v=4.0"></script>
+    <script src="/static/js/modules/inspector.js?v=4.0"></script>
+
     <!-- Application JavaScript Bundle -->
-    <script src="/static/js/app.js?v=3.3"></script>
+    <script src="/static/js/app.js?v=4.0"></script>
 </body>
 </html>
