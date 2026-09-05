@@ -12,8 +12,11 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from ntro_srm.web.schemas import (
     AOI,
+    HealthResponse,
     InferenceRequest,
+    JobListResponse,
     JobProgress,
+    PixelProbeResponse,
     SentinelSearchRequest,
     SentinelSearchResponse,
     SystemInfoResponse,
@@ -34,6 +37,36 @@ def get_system_info(request: Request) -> SystemInfoResponse:
     """Query local GPU device, VRAM, and model checkpoint status."""
     service = get_sr_service(request)
     return service.get_system_info()
+
+
+@router.get("/health", response_model=HealthResponse)
+def get_health(request: Request) -> HealthResponse:
+    """Liveness and readiness probe reporting device, checkpoints, and catalog status."""
+    from ntro_srm import __version__ as ntro_version
+
+    service = get_sr_service(request)
+    info = service.get_system_info()
+    active = sum(1 for j in service.jobs.values() if j.status in ("pending", "processing"))
+    return HealthResponse(
+        status="ok",
+        version=ntro_version,
+        device=service.device,
+        cuda_available=info.cuda_available,
+        checkpoints_ready=info.checkpoint_ready,
+        catalog_provider=info.active_provider,
+        active_jobs=active,
+    )
+
+
+@router.get("/layers")
+def get_layer_catalog(request: Request) -> dict:
+    """Describe every renderable map layer, spectral index, and quality metric.
+
+    The web UI builds its layer picker, index legends, and metric chips from this
+    payload, so new indices become available in the interface without a front-end change.
+    """
+    service = get_sr_service(request)
+    return service.layer_catalog()
 
 
 @router.post("/sentinel/search", response_model=SentinelSearchResponse)
@@ -78,6 +111,11 @@ async def upload_geotiff_patch(
     request: Request,
     file: UploadFile = File(...),
     model: str = Query(default="lite", description="Model variant: 'lite' or 'swin2sr'"),
+    run_analysis: bool = Query(default=True, description="Run quality assessment and thematic products"),
+    run_wald_validation: bool = Query(default=True, description="Run Wald's synthesis validation"),
+    uncertainty_members: Optional[int] = Query(
+        default=None, ge=0, le=8, description="Test-time-augmentation ensemble size (None = automatic)"
+    ),
 ) -> dict:
     """Upload a custom Sentinel-2 GeoTIFF patch and enqueue super-resolution inference."""
     service = get_sr_service(request)
@@ -121,6 +159,9 @@ async def upload_geotiff_patch(
         is_demo=False,
         overlap=32,
         model=model,
+        run_analysis=run_analysis,
+        run_wald_validation=run_wald_validation,
+        uncertainty_members=uncertainty_members,
     )
     job_id = service.create_job(req)
     return {
@@ -167,26 +208,88 @@ def get_job_status(job_id: str, request: Request) -> JobProgress:
     return job
 
 
+@router.get("/sr/jobs", response_model=JobListResponse)
+def list_jobs(
+    request: Request,
+    limit: int = Query(default=25, ge=1, le=100, description="Maximum jobs to return"),
+) -> JobListResponse:
+    """List recent super-resolution jobs, newest first, for the session history panel."""
+    service = get_sr_service(request)
+    records = service.list_jobs(limit=limit)
+    return JobListResponse(jobs=records, total=len(records))
+
+
 @router.api_route("/sr/jobs/{job_id}/preview/{layer_name}", methods=["GET", "HEAD"])
 def get_preview_layer(
     job_id: str,
     layer_name: str,
     request: Request,
 ) -> FileResponse:
-    """Serve georeferenced PNG overlay for interactive Leaflet display."""
-    service = get_sr_service(request)
-    valid_layers = [
-        "lr_rgb", "sr_rgb", "bicubic_rgb",
-        "lr_cir", "sr_cir", "bicubic_cir"
-    ]
-    if layer_name not in valid_layers:
-        raise HTTPException(status_code=400, detail=f"Invalid layer '{layer_name}'. Expected one of {valid_layers}")
+    """Serve a georeferenced PNG overlay for interactive Leaflet display.
 
-    img_path = service.output_base / job_id / f"{layer_name}.png"
-    if not img_path.is_file():
-        raise HTTPException(status_code=404, detail=f"Preview layer '{layer_name}' not ready or job incomplete.")
+    Composites and spectral-index layers beyond the two rendered eagerly at job completion
+    are materialised on first request and cached in the job directory, so the map can offer
+    every band combination and thematic product without inflating job runtime.
+    """
+    service = get_sr_service(request)
+
+    # Fast path: an already-rendered layer needs no job-state lookup.
+    cached = service.output_base / job_id / f"{layer_name}.png"
+    if cached.is_file():
+        return FileResponse(cached, media_type="image/png")
+
+    try:
+        img_path = service.resolve_preview(job_id, layer_name)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except FileNotFoundError as fe:
+        raise HTTPException(status_code=404, detail=str(fe))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to render layer '{layer_name}': {e}")
 
     return FileResponse(img_path, media_type="image/png")
+
+
+@router.get("/sr/jobs/{job_id}/analysis")
+def get_job_analysis(job_id: str, request: Request) -> dict:
+    """Return the quality-assessment block for a completed job.
+
+    Contains the Wald synthesis scores against the bicubic baseline, the radiometric
+    consistency verdict, the uncertainty summary, per-index statistics, and links to the
+    downloadable QA report.
+    """
+    service = get_sr_service(request)
+    job = service.get_job_progress(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    if job.status != "completed" or not job.result:
+        raise HTTPException(status_code=400, detail=f"Job '{job_id}' is not completed yet.")
+    return job.result.get("analysis") or {}
+
+
+@router.get("/sr/jobs/{job_id}/pixel", response_model=PixelProbeResponse)
+def probe_pixel(
+    job_id: str,
+    request: Request,
+    lat: float = Query(..., ge=-90.0, le=90.0, description="WGS84 latitude"),
+    lon: float = Query(..., ge=-180.0, le=180.0, description="WGS84 longitude"),
+) -> PixelProbeResponse:
+    """Sample the 10-band spectrum, spectral indices, and confidence at one coordinate.
+
+    This is what makes the super-resolved product inspectable rather than merely viewable:
+    the caller gets the observed 10 m spectrum and the reconstructed 2.5 m spectrum side by
+    side, so spectral fidelity can be judged pixel by pixel.
+    """
+    service = get_sr_service(request)
+    try:
+        payload = service.probe_pixel(job_id, lat, lon)
+    except FileNotFoundError as fe:
+        raise HTTPException(status_code=404, detail=str(fe))
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pixel probe failed: {e}")
+    return PixelProbeResponse(**payload)
 
 
 @router.get("/sr/jobs/{job_id}/download/{file_type}")
@@ -236,8 +339,54 @@ def download_result_file(
             filename=f"NTRO_SRM_CIR_{job_id}.png",
         )
 
+    elif file_type in ("native", "lr", "native_geotiff"):
+        lr_path = Path(job.result.get("lr_geotiff_path") or job.result["input_geotiff_path"])
+        if not lr_path.is_file():
+            raise HTTPException(status_code=404, detail="Native 10 m GeoTIFF missing on disk.")
+        return FileResponse(
+            lr_path,
+            media_type="image/tiff",
+            filename=f"NTRO_SRM_native_10m_{job.result['scene_id']}_{job_id}.tif",
+        )
+
+    elif file_type == "confidence":
+        conf = job.result.get("confidence_geotiff_path")
+        if not conf or not Path(conf).is_file():
+            raise HTTPException(
+                status_code=404,
+                detail="No confidence raster was produced for this job (quality assessment disabled).",
+            )
+        return FileResponse(
+            Path(conf),
+            media_type="image/tiff",
+            filename=f"NTRO_SRM_confidence_2.5m_{job_id}.tif",
+        )
+
+    elif file_type in ("report", "report-json"):
+        report_path = job_dir / "quality_report.json"
+        if not report_path.is_file():
+            raise HTTPException(status_code=404, detail="Quality report not available for this job.")
+        return FileResponse(
+            report_path,
+            media_type="application/json",
+            filename=f"NTRO_SRM_quality_report_{job_id}.json",
+        )
+
+    elif file_type in ("report-md", "report_markdown"):
+        report_path = job_dir / "quality_report.md"
+        if not report_path.is_file():
+            raise HTTPException(status_code=404, detail="Quality report not available for this job.")
+        return FileResponse(
+            report_path,
+            media_type="text/markdown",
+            filename=f"NTRO_SRM_quality_report_{job_id}.md",
+        )
+
     else:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid file_type '{file_type}'. Supported: 'geotiff', 'rgb', 'cir'."
+            detail=(
+                f"Invalid file_type '{file_type}'. Supported: 'geotiff', 'native', 'confidence', "
+                f"'rgb', 'cir', 'report', 'report-md'."
+            ),
         )
