@@ -10,7 +10,7 @@
     <script src="/static/vendor/leaflet/leaflet.js"></script>
     
     <!-- Application Styling -->
-    <link rel="stylesheet" href="/static/css/app.css?v=5.0">
+    <link rel="stylesheet" href="/static/css/app.css?v=6.3">
 </head>
 <body>
     <div class="app-container">
@@ -133,6 +133,43 @@
                         </button>
                     </div>
                 </div>
+
+                <!-- Compact scientific read-out; populated after every completed run. -->
+                <section id="validation-dock" class="validation-dock hidden" aria-live="polite">
+                    <div class="validation-dock-head">
+                        <div>
+                            <div class="validation-eyebrow">Validation</div>
+                            <div class="validation-title-row">
+                                <span id="validation-verdict" class="validation-verdict">Report ready</span>
+                                <span id="validation-scope" class="validation-scope">Wald · 40 m → 10 m</span>
+                            </div>
+                        </div>
+                        <button id="btn-open-report" class="validation-report-button" type="button">Full report</button>
+                    </div>
+                    <div id="comparison-summary" class="comparison-summary hidden"></div>
+                    <div id="validation-metrics" class="validation-metrics"></div>
+                    <div class="validation-foot">
+                        <div class="density-readout" title="Grid samples per square kilometre. This is raster sampling density, not new observed information.">
+                            <span class="density-value">16×</span>
+                            <span>grid sampling<br><b>10k → 160k px/km²</b></span>
+                        </div>
+                        <div id="analysis-layer-switcher" class="analysis-layer-switcher" aria-label="Result overlay">
+                            <button type="button" class="analysis-layer-btn active" data-layer="rgb">Image</button>
+                            <button type="button" class="analysis-layer-btn" data-layer="confidence">Confidence</button>
+                            <button type="button" class="analysis-layer-btn" data-layer="novelty">Added detail</button>
+                            <button type="button" class="analysis-layer-btn" data-layer="ndvi">NDVI</button>
+                        </div>
+                    </div>
+                    <button id="btn-inspect-center" class="validation-hint" type="button">Click the image to inspect a pixel · or inspect the center</button>
+                </section>
+
+                <aside id="pixel-inspector" class="pixel-inspector hidden" aria-live="polite">
+                    <button id="btn-close-pixel" class="pixel-close" type="button" aria-label="Close pixel inspector">×</button>
+                    <div class="validation-eyebrow">Pixel inspector</div>
+                    <div id="pixel-coordinate" class="pixel-coordinate">—</div>
+                    <div id="pixel-summary" class="pixel-summary"></div>
+                    <div id="pixel-spectrum" class="pixel-spectrum"></div>
+                </aside>
 
                 <!-- Bottom Status Bar for Mouse Coords -->
                 <div class="map-status-bar">
@@ -519,6 +556,14 @@
                                     Infrared preview
                                 </a>
                             </div>
+                            <div class="download-subrow">
+                                <a id="btn-download-report" class="btn btn-secondary btn-sm flex-1" href="#" download>
+                                    Validation JSON
+                                </a>
+                                <a id="btn-download-report-md" class="btn btn-secondary btn-sm flex-1" href="#" download>
+                                    Report .md
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -526,7 +571,22 @@
         </main>
     </div>
 
+    <div id="validation-modal" class="validation-modal hidden" role="dialog" aria-modal="true" aria-labelledby="validation-modal-title">
+        <div class="validation-modal-backdrop" data-close-report="true"></div>
+        <article class="validation-report-sheet">
+            <header class="report-sheet-head">
+                <div>
+                    <div class="validation-eyebrow">Scientific quality assessment</div>
+                    <h2 id="validation-modal-title">Validation report</h2>
+                    <p id="validation-modal-subtitle">Wald synthesis and source-consistency results</p>
+                </div>
+                <button id="btn-close-report" class="report-close" type="button" aria-label="Close report">×</button>
+            </header>
+            <div id="validation-report-content" class="validation-report-content"></div>
+        </article>
+    </div>
+
     <!-- Application JavaScript Bundle -->
-    <script src="/static/js/app.js?v=4.0"></script>
+    <script src="/static/js/app.js?v=5.5"></script>
 </body>
 </html>

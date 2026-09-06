@@ -159,6 +159,10 @@ class TestWebAPI:
         assert "Previous run" in resp.text
         assert "Compare Lite vs FT" in resp.text
         assert "btn-toggle-diff" in resp.text
+        assert "validation-dock" in resp.text
+        assert "Wald · 40 m → 10 m" in resp.text
+        assert "pixel-inspector" in resp.text
+        assert "btn-download-report" in resp.text
         assert "leaflet.js" in resp.text
 
     def test_model_variant_normalization(self):
