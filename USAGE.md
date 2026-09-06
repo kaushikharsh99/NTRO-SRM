@@ -69,17 +69,25 @@ Once inference completes, Leaflet map overlays are dynamically rendered:
 - **Continuous Opacity Blend:** Switch to **Blend** mode and adjust the opacity slider from 0% to 100%.
 - **Single Layer Mode:** Toggle **10m Native Only** or **2.5m SR Only**.
 
-#### 5. Dual Multi-Spectral Color Modes
+#### 5. Validation Dashboard & Pixel Inspection
+Every web run now includes a compact scientific validation panel on the map:
+- **Wald validation:** PSNR, SSIM, spectral angle (SAM), and ERGAS are measured at the $40\text{m}\to10\text{m}$ scale, where the original 10 m image is available as a reference. These figures indicate model accuracy; they do not claim unavailable 2.5 m ground truth.
+- **Run benchmark:** **Compare Lite vs FT** reports each metric delta and states which model leads across the headline measures.
+- **Analytical overlays:** Switch the result side of the map between the image, reconstruction confidence, added neural detail, and NDVI.
+- **Pixel inspector:** Click inside the processed patch to compare the observed 10 m and reconstructed 2.5 m spectra, NDVI/NDWI, and local confidence.
+- **Full report:** Open the per-band table and interpretation limits, or download the JSON and Markdown reports from the result card.
+
+#### 6. Dual Multi-Spectral Color Modes
 - **Natural RGB Mode:** True color representation combining Red (B04), Green (B03), and Blue (B02) calibrated using physical reflectance scaling to avoid neon saturation.
 - **Color Infrared (CIR) Mode:** High-contrast false color infrared combining NIR (B08), Red (B04), and Green (B03) rendering healthy photosynthetic vegetation in rich crimson tones.
 
-#### 6. Direct GeoTIFF Upload (Tab 2)
+#### 7. Direct GeoTIFF Upload (Tab 2)
 To upscale an existing Sentinel-2 GeoTIFF from your disk:
 1. Navigate to **Tab 2: Upload GeoTIFF**.
 2. Drag and drop any 10-band, 12-band, or RGB GeoTIFF file up to $512 \times 512$ pixels.
 3. Click **"Upscale Uploaded Image"**.
 
-#### 7. Downloading Super-Resolved Products
+#### 8. Downloading Super-Resolved Products
 Download buttons appear automatically upon completion:
 - **Download 10-Band 2.5m GeoTIFF:** Full scientific 32-bit floating-point multi-band raster with exact CRS and geotransform.
 - **Download RGB (PNG):** Georeferenced true-color image.
