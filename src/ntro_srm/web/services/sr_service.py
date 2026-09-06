@@ -25,6 +25,13 @@ import dotenv
 from ntro_srm.data.sentinel2 import Sentinel2Reader
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline, Sentinel2SRResult
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
+from ntro_srm.utils.geotiff import write_sr_geotiff
+from ntro_srm.web.services.analysis_service import (
+    COMPOSITES,
+    AnalysisService,
+    available_layer_names,
+    layer_catalog,
+)
 from ntro_srm.web.schemas import (
     AOI,
     InferenceRequest,
@@ -113,6 +120,72 @@ def render_false_color_cir(
     return (out * 255.0).astype(np.uint8)
 
 
+# Nominal upper reflectance bounds per Sentinel-2 band, used to keep the radiometric
+# stretch physically anchored instead of purely percentile-driven. Index positions follow
+# the canonical 10-band order [B02, B03, B04, B05, B06, B07, B08, B8A, B11, B12].
+BAND_CEILING: tuple[float, ...] = (0.28, 0.28, 0.28, 0.35, 0.50, 0.60, 0.70, 0.70, 0.55, 0.45)
+BAND_FLOOR_CAP: tuple[float, ...] = (0.03, 0.03, 0.03, 0.04, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05)
+DISPLAY_GAMMA: float = 1.9
+
+
+def render_composite(
+    stack: np.ndarray,
+    reference: Optional[np.ndarray],
+    band_indices: Tuple[int, int, int],
+) -> np.ndarray:
+    """Render a three-band composite from a 10-band reflectance stack.
+
+    True colour and colour-infrared reuse the calibrated joint-scaling renderers so their
+    appearance is unchanged; every other composite (SWIR, agriculture, geology) is stretched
+    per channel between a haze-subtracted floor and a physically anchored ceiling, which is
+    the correct treatment when the three channels span very different reflectance regimes.
+
+    Parameters
+    ----------
+    stack : numpy.ndarray
+        Reflectance stack of shape ``(10, H, W)`` to be rendered.
+    reference : numpy.ndarray, optional
+        Stack whose statistics drive the stretch, so that the native, bicubic and
+        super-resolved renders of the same scene stay radiometrically comparable.
+        Defaults to ``stack``.
+    band_indices : tuple[int, int, int]
+        Band positions mapped to the red, green and blue display channels.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(H, W, 3)`` uint8 image.
+    """
+    ref = stack if reference is None else reference
+    r, g, b = band_indices
+
+    if band_indices == (2, 1, 0):
+        return render_true_color_rgb(
+            np.transpose(stack[[r, g, b]], (1, 2, 0)),
+            ref_rgb=np.transpose(ref[[r, g, b]], (1, 2, 0)),
+        )
+    if band_indices == (6, 2, 1):
+        return render_false_color_cir(
+            np.transpose(stack[[r, g, b]], (1, 2, 0)),
+            ref_cir=np.transpose(ref[[r, g, b]], (1, 2, 0)),
+        )
+
+    out = np.zeros((stack.shape[1], stack.shape[2], 3), dtype=np.float32)
+    for channel, band in enumerate(band_indices):
+        ref_band = ref[band]
+        valid = np.isfinite(ref_band)
+        if np.any(valid):
+            floor = min(max(0.0, float(np.percentile(ref_band[valid], 1.0))), BAND_FLOOR_CAP[band])
+            ceiling = max(float(np.percentile(ref_band[valid], 99.0)), BAND_CEILING[band])
+        else:
+            floor, ceiling = 0.0, BAND_CEILING[band]
+        denom = ceiling - floor if ceiling > floor else 1.0
+        out[..., channel] = np.clip((stack[band] - floor) / denom, 0.0, 1.0)
+
+    out = np.power(np.nan_to_num(out, nan=0.0), 1.0 / DISPLAY_GAMMA)
+    return (out * 255.0).astype(np.uint8)
+
+
 class SRService:
     """Manages super-resolution inference pipeline and background job lifecycle."""
 
@@ -153,6 +226,9 @@ class SRService:
         self.active_provider: SentinelDataProvider = (
             self.cdse_provider if self.cdse_provider.is_configured() else self.earth_search_provider
         )
+
+        # Scientific quality-assessment and thematic-product service
+        self.analysis = AnalysisService(self.workspace_root)
 
         # Background worker pool (single worker initially for GPU safety)
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -464,16 +540,79 @@ class SRService:
                 except Exception as alias_err:
                     print(f"[SRService] Alias creation note: {alias_err}")
 
-            # 3. Generate Web Map Preview Overlays (RGB, CIR, Bicubic)
-            self._update_progress(job_id, "processing", "Generating interactive map visual overlays...", 80)
+            # 3. Persist the preprocessed 10 m observation as a canonical 10-band GeoTIFF.
+            # Everything downstream (previews, lazy layers, the pixel probe, the QA report)
+            # reads this file, so band order and radiometry are identical everywhere.
+            lr_geotiff = job_dir / f"{job_id}_native_10m.tif"
+            try:
+                write_sr_geotiff(
+                    output_path=lr_geotiff,
+                    tensor=sr_result.lr_tensor,
+                    transform=sr_result.input_transform,
+                    crs=sr_result.crs,
+                    model_name="Observed (no super-resolution)",
+                    input_gsd="10m",
+                    output_gsd="10m",
+                    upscale_factor=1,
+                )
+            except Exception as lr_err:
+                print(f"[SRService] Native 10 m export note: {lr_err}")
+                lr_geotiff = Path(input_raster)
+
+            # 4. Generate Web Map Preview Overlays (RGB, CIR, Bicubic)
+            self._update_progress(job_id, "processing", "Generating interactive map visual overlays...", 78)
             preview_meta = self._generate_previews(
-                lr_path=input_raster,
+                lr_tensor=sr_result.lr_tensor,
                 sr_path=output_sr_geotiff,
                 dest_dir=job_dir,
             )
 
+            # 5. Scientific quality assessment, uncertainty and thematic products.
+            analysis_payload: dict[str, Any] = {}
+            confidence_geotiff = job_dir / f"{job_id}_confidence_2.5m.tif"
+            if request.run_analysis:
+                members = self._resolve_ensemble_size(request, model_variant)
+                try:
+                    def _predict(tile: torch.Tensor) -> torch.Tensor:
+                        return pipeline.model.predict(
+                            tile,
+                            auto_normalize=False,
+                            clamp_output=True,
+                            overlap=request.overlap,
+                        )
+
+                    artifacts = self.analysis.run(
+                        job_id=job_id,
+                        job_dir=job_dir,
+                        lr_tensor=sr_result.lr_tensor,
+                        sr_tensor=sr_result.sr_tensor,
+                        predict_fn=_predict,
+                        scene_meta={
+                            "scene_id": effective_scene_id,
+                            "model": model_display_name,
+                            "model_variant": model_variant,
+                            "device": self.device,
+                            "crs": str(sr_result.crs),
+                            "native_gsd": "10.0m",
+                            "output_gsd": "2.50m",
+                            "input_shape": list(sr_result.input_shape),
+                            "output_shape": list(sr_result.output_shape),
+                        },
+                        run_wald=request.run_wald_validation,
+                        uncertainty_members=members,
+                        crs=sr_result.crs,
+                        sr_transform=sr_result.output_transform,
+                        progress_callback=lambda msg, pct: self._update_progress(
+                            job_id, "processing", msg, pct
+                        ),
+                    )
+                    analysis_payload = artifacts.payload
+                except Exception as an_err:
+                    print(f"[SRService] Quality assessment failed: {an_err}")
+                    analysis_payload = {"warnings": [f"Quality assessment failed: {an_err}"]}
+
             total_time = round(time.time() - start_time, 2)
-            self._update_progress(job_id, "processing", "Finalizing product metadata...", 95)
+            self._update_progress(job_id, "processing", "Finalizing product metadata...", 96)
 
             result_payload = {
                 "job_id": job_id,
@@ -481,6 +620,10 @@ class SRService:
                 "scene_id": effective_scene_id,
                 "sr_geotiff_path": str(output_sr_geotiff),
                 "sr_geotiff_filename": output_sr_geotiff.name,
+                "lr_geotiff_path": str(lr_geotiff),
+                "confidence_geotiff_path": (
+                    str(confidence_geotiff) if confidence_geotiff.is_file() else None
+                ),
                 "input_geotiff_path": str(input_raster),
                 "processing_time_sec": total_time,
                 "device_used": self.device,
@@ -498,6 +641,7 @@ class SRService:
                 "bounds_wgs84": preview_meta["bounds_wgs84"],
                 "leaflet_bounds": preview_meta["leaflet_bounds"],
                 "previews": preview_meta["previews"],
+                "analysis": analysis_payload,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }
 
@@ -521,15 +665,34 @@ class SRService:
                 error=err_msg,
             )
 
-    def _generate_previews(self, lr_path: Path, sr_path: Path, dest_dir: Path) -> dict:
+    def _resolve_ensemble_size(self, request: InferenceRequest, model_variant: str) -> int:
+        """Decide how many test-time-augmentation members the uncertainty pass may use.
+
+        The ensemble costs one extra full-resolution forward pass per member. That is a
+        couple of seconds on SEN2SR-Lite but many minutes on the Vision Transformer, so the
+        default is opt-in for the heavy model and enabled for the fast one.
+
+        Parameters
+        ----------
+        request : InferenceRequest
+            Job request; ``uncertainty_members`` of ``None`` selects the automatic policy.
+        model_variant : str
+            Resolved model identifier (``"lite"`` or ``"swin2sr"``).
+
+        Returns
+        -------
+        int
+            Ensemble size; ``0`` selects the free novelty-only estimator.
+        """
+        requested = request.uncertainty_members
+        if requested is None:
+            return 0 if model_variant == "swin2sr" else 4
+        return max(0, min(8, int(requested)))
+
+    def _generate_previews(self, lr_tensor: torch.Tensor, sr_path: Path, dest_dir: Path) -> dict:
         """Generate georeferenced RGB, CIR, and Bicubic PNG previews for Leaflet."""
-        # 1. Read LR
-        reader = Sentinel2Reader(lr_path)
-        lr_data = reader.read()
-        lr_tensor = lr_data.tensor.float()
-        if lr_tensor.max() > 2.0:
-            lr_tensor = lr_tensor / 10000.0
-        lr_np = lr_tensor.numpy()  # (10, H, W)
+        # 1. Preprocessed 10-band observation in [0, 1]
+        lr_np = lr_tensor.detach().cpu().float().numpy()  # (10, H, W)
 
         # 2. Read SR
         with rasterio.open(sr_path) as src:
@@ -566,45 +729,147 @@ class SRService:
             "max_lat": max_lat,
         }
 
-        # 4. Color Channels:
-        # True Color RGB: B04 (index 2), B03 (index 1), B02 (index 0)
-        # False Color CIR: B08 (index 6), B04 (index 2), B03 (index 1)
-        lr_rgb_raw = np.transpose(lr_np[[2, 1, 0]], (1, 2, 0))
-        bic_rgb_raw = np.transpose(bicubic_np[[2, 1, 0]], (1, 2, 0))
-        sr_rgb_raw = np.transpose(sr_np[[2, 1, 0]], (1, 2, 0))
+        # 4. Render the composites that the map opens with. Every remaining composite,
+        # spectral index and analysis layer is materialised lazily on first request.
+        stacks = {"lr": lr_np, "bicubic": bicubic_np, "sr": sr_np}
+        for key in ("rgb", "cir"):
+            band_idx = COMPOSITES[key]["bands"]
+            for source, stack in stacks.items():
+                image = render_composite(stack, lr_np, band_idx)
+                Image.fromarray(image).save(
+                    dest_dir / f"{source}_{key}.png", format="PNG", optimize=True
+                )
 
-        lr_cir_raw = np.transpose(lr_np[[6, 2, 1]], (1, 2, 0))
-        bic_cir_raw = np.transpose(bicubic_np[[6, 2, 1]], (1, 2, 0))
-        sr_cir_raw = np.transpose(sr_np[[6, 2, 1]], (1, 2, 0))
-
-        # Photorealistic True Color RGB with shared radiometric calibration
-        lr_rgb_u8 = render_true_color_rgb(lr_rgb_raw, ref_rgb=lr_rgb_raw)
-        bic_rgb_u8 = render_true_color_rgb(bic_rgb_raw, ref_rgb=lr_rgb_raw)
-        sr_rgb_u8 = render_true_color_rgb(sr_rgb_raw, ref_rgb=lr_rgb_raw)
-
-        # Standard False Color Infrared (CIR)
-        lr_cir_u8 = render_false_color_cir(lr_cir_raw, ref_cir=lr_cir_raw)
-        bic_cir_u8 = render_false_color_cir(bic_cir_raw, ref_cir=lr_cir_raw)
-        sr_cir_u8 = render_false_color_cir(sr_cir_raw, ref_cir=lr_cir_raw)
-
-        # Save preview images
-        Image.fromarray(lr_rgb_u8).save(dest_dir / "lr_rgb.png", format="PNG", optimize=True)
-        Image.fromarray(bic_rgb_u8).save(dest_dir / "bicubic_rgb.png", format="PNG", optimize=True)
-        Image.fromarray(sr_rgb_u8).save(dest_dir / "sr_rgb.png", format="PNG", optimize=True)
-
-        Image.fromarray(lr_cir_u8).save(dest_dir / "lr_cir.png", format="PNG", optimize=True)
-        Image.fromarray(bic_cir_u8).save(dest_dir / "bicubic_cir.png", format="PNG", optimize=True)
-        Image.fromarray(sr_cir_u8).save(dest_dir / "sr_cir.png", format="PNG", optimize=True)
+        job_id = dest_dir.name
+        previews = {
+            name: f"/api/sr/jobs/{job_id}/preview/{name}" for name in available_layer_names()
+        }
 
         return {
             "bounds_wgs84": bounds_wgs84,
             "leaflet_bounds": leaflet_bounds,
-            "previews": {
-                "lr_rgb": f"/api/sr/jobs/{dest_dir.name}/preview/lr_rgb",
-                "sr_rgb": f"/api/sr/jobs/{dest_dir.name}/preview/sr_rgb",
-                "bicubic_rgb": f"/api/sr/jobs/{dest_dir.name}/preview/bicubic_rgb",
-                "lr_cir": f"/api/sr/jobs/{dest_dir.name}/preview/lr_cir",
-                "sr_cir": f"/api/sr/jobs/{dest_dir.name}/preview/sr_cir",
-                "bicubic_cir": f"/api/sr/jobs/{dest_dir.name}/preview/bicubic_cir",
-            },
+            "previews": previews,
         }
+
+    # ------------------------------------------------------------------
+    # Job introspection helpers used by the REST layer
+    # ------------------------------------------------------------------
+    def list_jobs(self, limit: int = 25) -> list[dict[str, Any]]:
+        """Summarise recent jobs, newest first, for the session history panel.
+
+        Parameters
+        ----------
+        limit : int, default=25
+            Maximum number of entries to return.
+
+        Returns
+        -------
+        list[dict]
+            One compact record per job, safe to render without fetching the full result.
+        """
+        with self._lock:
+            jobs = sorted(self.jobs.values(), key=lambda j: j.created_at, reverse=True)[:limit]
+            records = []
+            for job in jobs:
+                result = job.result or {}
+                analysis = result.get("analysis") or {}
+                summary = analysis.get("summary") or {}
+                records.append(
+                    {
+                        "job_id": job.job_id,
+                        "status": job.status,
+                        "created_at": job.created_at,
+                        "updated_at": job.updated_at,
+                        "progress_percent": job.progress_percent,
+                        "scene_id": result.get("scene_id"),
+                        "model": result.get("model"),
+                        "output_shape": result.get("output_shape"),
+                        "processing_time_sec": result.get("processing_time_sec"),
+                        "leaflet_bounds": result.get("leaflet_bounds"),
+                        "verdict": summary.get("verdict"),
+                        "error_message": job.error_message,
+                    }
+                )
+            return records
+
+    def resolve_preview(self, job_id: str, layer_name: str) -> Path:
+        """Return the on-disk PNG for a preview layer, rendering it if necessary.
+
+        Parameters
+        ----------
+        job_id : str
+            Job identifier.
+        layer_name : str
+            Layer identifier, e.g. ``sr_ndvi`` or ``bicubic_swir``.
+
+        Returns
+        -------
+        Path
+            Path to the cached PNG.
+
+        Raises
+        ------
+        ValueError
+            If the layer name is unknown.
+        FileNotFoundError
+            If the job has not produced the rasters the layer needs.
+        """
+        job = self.get_job_progress(job_id)
+        if not job or job.status != "completed" or not job.result:
+            raise FileNotFoundError(f"Job '{job_id}' has no completed products yet.")
+
+        result = job.result
+        job_dir = self.output_base / job_id
+        sr_path = Path(result["sr_geotiff_path"])
+        lr_path = Path(result.get("lr_geotiff_path") or result["input_geotiff_path"])
+        confidence = result.get("confidence_geotiff_path")
+        return self.analysis.render_layer(
+            job_dir=job_dir,
+            layer_name=layer_name,
+            lr_path=lr_path,
+            sr_path=sr_path,
+            confidence_path=Path(confidence) if confidence else None,
+        )
+
+    def probe_pixel(self, job_id: str, lat: float, lon: float) -> dict[str, Any]:
+        """Sample the observed and super-resolved spectra at a geographic coordinate.
+
+        Parameters
+        ----------
+        job_id : str
+            Completed job to probe.
+        lat, lon : float
+            WGS84 coordinate.
+
+        Returns
+        -------
+        dict
+            Payload for the web UI's spectral inspector.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the job has not completed.
+        ValueError
+            If the coordinate lies outside the patch.
+        """
+        job = self.get_job_progress(job_id)
+        if not job or job.status != "completed" or not job.result:
+            raise FileNotFoundError(f"Job '{job_id}' has no completed products yet.")
+
+        result = job.result
+        confidence = result.get("confidence_geotiff_path")
+        uncertainty_meta = ((result.get("analysis") or {}).get("uncertainty")) or {}
+        return self.analysis.probe_pixel(
+            lat=lat,
+            lon=lon,
+            lr_path=Path(result.get("lr_geotiff_path") or result["input_geotiff_path"]),
+            sr_path=Path(result["sr_geotiff_path"]),
+            confidence_path=Path(confidence) if confidence else None,
+            uncertainty_meta=uncertainty_meta,
+        )
+
+    @staticmethod
+    def layer_catalog() -> dict[str, Any]:
+        """Describe every renderable layer, index and metric for the UI layer picker."""
+        return layer_catalog()

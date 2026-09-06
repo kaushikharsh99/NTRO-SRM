@@ -18,6 +18,10 @@ The operational baseline currently provides:
 5. A ten-band 2.5 m GeoTIFF with preserved geographic extent.
 6. Reference-based and source-consistency evaluation with a JSON audit report.
 7. A differentiable spectral/spatial objective for the paired-data fine-tuning phase.
+8. Wald synthesis validation against a bicubic baseline.
+9. Novelty and test-time-augmentation uncertainty estimation.
+10. Ten thematic indices for crop, water, urban, moisture, and burn analysis.
+11. A 93-pair geographically split dataset manifest covering twelve sites.
 
 The pretrained weights provide the baseline. The team-owned technical work is
 the multispectral ingestion, geospatial delivery, evaluation framework, and the
@@ -54,6 +58,8 @@ L = wpixel * Lcharbonnier(P, T)
 - The pixel term reconstructs observed HR reflectance and is robust to outliers.
 - The spectral term preserves the direction of each multispectral pixel vector.
 - The gradient term rewards agreement at spatial boundaries.
+- The paired-reference terms use each sample's supervision mask, so a real RGB/NIR
+  reference cannot train red-edge or SWIR bands it did not measure.
 - The source term prevents high-frequency reconstruction from changing the
   observed 10 m signal when the output is aggregated back to the sensor grid.
 - The range term penalizes reflectance outside the configured physical interval.
@@ -80,13 +86,14 @@ train, validation, and test separation is required to avoid leakage.
 
 ## Next model milestone
 
-1. Build a versioned manifest of temporally matched Sentinel-2/HR scene pairs.
-2. Record cloud cover, acquisition-time difference, CRS, alignment error, and split.
-3. Fine-tune one baseline backbone using `SpectralSpatialLoss`.
+1. Connect `PairedS2Dataset` and `SpectralSpatialLoss` in a trainer; the loss already
+   consumes the dataset's per-band supervision mask.
+2. Smoke-train SEN2SR-Lite and verify checkpoint save/resume and decreasing validation loss.
+3. Fine-tune the baseline on Wald pairs, then the available real RGB/NIR pairs.
 4. Compare bicubic, the untouched pretrained checkpoint, and the fine-tuned checkpoint.
 5. Run an ablation that removes each loss term in turn.
 6. Validate one downstream task, such as field-boundary extraction or flood mapping.
-7. Add checkpoint-ensemble or Monte Carlo uncertainty after accuracy is established.
+7. Expand the real paired set and quantify temporal and alignment error.
 
 ## Claims and limitations
 

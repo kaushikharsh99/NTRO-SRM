@@ -133,23 +133,37 @@ class SEN2SRModel(nn.Module):
 
         # Load or download pretrained model
         self.model = self._load_model(auto_download=auto_download)
+        self._materialize_inference_tensors(preserve_parameters=False)
         self.model.to(self.device)
         self.set_trainable(trainable)
 
+    def _materialize_inference_tensors(self, *, preserve_parameters: bool) -> None:
+        """Copy MLSTAC inference tensors into ordinary autograd tensors."""
+        for module in self.model.modules():
+            for name, parameter in list(module.named_parameters(recurse=False)):
+                if parameter.is_inference():
+                    if preserve_parameters:
+                        # Keep optimizer references valid after an upstream
+                        # evaluation layer refreshes fused parameter data.
+                        parameter.data = parameter.detach().clone()
+                    else:
+                        setattr(
+                            module,
+                            name,
+                            nn.Parameter(
+                                parameter.detach().clone(),
+                                requires_grad=parameter.requires_grad,
+                            ),
+                        )
+            for name, buffer in list(module.named_buffers(recurse=False)):
+                if buffer is not None and buffer.is_inference():
+                    module._buffers[name] = buffer.detach().clone()
+
     def set_trainable(self, trainable: bool) -> None:
         """Switch backbone parameter gradients and training mode explicitly."""
-        if trainable:
-            # MLSTAC may construct checkpoint tensors inside torch.inference_mode().
-            # Such tensors cannot later enable autograd, so materialize ordinary
-            # Parameter/buffer copies before fine-tuning.
-            for module in self.model.modules():
-                for name, parameter in list(module.named_parameters(recurse=False)):
-                    if parameter.is_inference():
-                        replacement = nn.Parameter(parameter.detach().clone(), requires_grad=True)
-                        setattr(module, name, replacement)
-                for name, buffer in list(module.named_buffers(recurse=False)):
-                    if buffer is not None and buffer.is_inference():
-                        module._buffers[name] = buffer.detach().clone()
+        # Some upstream evaluation layers refresh fused weights during an
+        # inference-mode forward. Convert those tensors in place as well.
+        self._materialize_inference_tensors(preserve_parameters=True)
         for parameter in self.model.parameters():
             parameter.requires_grad = trainable
         self.model.train(mode=trainable)
