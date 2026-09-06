@@ -1,0 +1,29 @@
+{
+  "generated_at": "2026-09-06T14:41:56.645562+00:00",
+  "total": 93,
+  "by_type": {
+    "wald_synthetic": 90,
+    "real_paired": 3
+  },
+  "by_split": {
+    "train": 44,
+    "test": 27,
+    "val": 22
+  },
+  "by_site": {
+    "DE_FRANKFURT_URBAN": 6,
+    "IND_ASSAM_FLOOD": 9,
+    "IND_BENGALURU_LAKE": 9,
+    "IND_DELHI_URBAN": 9,
+    "IND_JAIPUR_SEMIARID": 9,
+    "IND_MUMBAI_COAST": 9,
+    "IND_PUNJAB_AGRI": 6,
+    "NL_ROTTERDAM_PORT": 6,
+    "UAE_DUBAI_COAST": 9,
+    "USA_MOUNTAIN_LAKE": 7,
+    "USA_SALINAS_AGRI": 7,
+    "USA_TAHOE_ALPINE": 7
+  },
+  "indian_priority_tiles": 51,
+  "missing_files_in_first50": 0
+}
