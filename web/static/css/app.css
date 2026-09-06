@@ -2648,3 +2648,8 @@ body {
     opacity: 0.65;
     cursor: wait;
 }
+
+/* Fine-tuned model card spans the 2-col model grid */
+#label-model-liteft {
+    grid-column: 1 / -1;
+}

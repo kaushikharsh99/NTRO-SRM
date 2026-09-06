@@ -25,6 +25,7 @@ import dotenv
 from ntro_srm.data.sentinel2 import Sentinel2Reader
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline, Sentinel2SRResult
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
+from ntro_srm.training.trainer import find_ft_checkpoint
 from ntro_srm.utils.geotiff import write_sr_geotiff
 from ntro_srm.utils.device import device_name, mps_available, select_device
 from ntro_srm.web.services.analysis_service import (
@@ -46,6 +47,25 @@ from ntro_srm.web.services.sentinel_service import (
     LocalDemoProvider,
     SentinelDataProvider,
 )
+
+
+LITE_FT_ALIASES = frozenset({"lite-ft", "lite_ft", "liteft", "ft", "finetuned"})
+SWIN_ALIASES = frozenset({"swin", "swin2sr", "sen2sr"})
+
+
+def normalize_variant(variant: str | None) -> str:
+    """Normalize a user-supplied model id to 'swin2sr', 'lite-ft', or 'lite'."""
+    key = str(variant or "lite").strip().lower()
+    if key in SWIN_ALIASES:
+        return "swin2sr"
+    if key in LITE_FT_ALIASES:
+        return "lite-ft"
+    return "lite"
+
+
+def find_lite_ft_checkpoint(workspace_root: Path) -> Path | None:
+    """Locate the fine-tuned Lite weights, preferring the best-epoch file."""
+    return find_ft_checkpoint(workspace_root)
 
 
 def render_true_color_rgb(
@@ -240,7 +260,7 @@ class SRService:
 
     def get_pipeline(self, variant: str = "lite") -> Sentinel2SRPipeline:
         """Fetch or instantiate the requested model pipeline variant."""
-        normalized = "swin2sr" if variant.lower() in ("swin", "swin2sr", "sen2sr") else "lite"
+        normalized = normalize_variant(variant)
         with self._lock:
             if normalized in self._pipelines:
                 return self._pipelines[normalized]
@@ -257,14 +277,30 @@ class SRService:
                             f">=2.2 GB required). Please close other GPU processes or use SEN2SR-Lite."
                         )
 
+            backbone = "lite" if normalized == "lite-ft" else normalized
             checkpoint_folder = "SEN2SR" if normalized == "swin2sr" else "SEN2SRLite"
             checkpoint_dir = self.workspace_root / "checkpoints" / checkpoint_folder
 
             pipeline = Sentinel2SRPipeline(
-                model_variant=normalized,
+                model_variant=backbone,
                 device=self.device,
                 checkpoint_dir=checkpoint_dir,
             )
+            if normalized == "lite-ft":
+                ft_ckpt = find_lite_ft_checkpoint(self.workspace_root)
+                if ft_ckpt is None:
+                    raise RuntimeError(
+                        "Fine-tuned Lite weights not found. Run "
+                        "'python scripts/finetune_lite.py --epochs 5' first to produce "
+                        "outputs/finetune/lite_ft_best.pt."
+                    )
+                state = torch.load(ft_ckpt, map_location="cpu", weights_only=False)
+                pipeline.model.load_state_dict(state["model_state"])
+                pipeline.model.set_trainable(False)
+                pipeline.model.eval()
+                # Tag the adapter so GeoTIFF labels and job metadata say FT.
+                pipeline.model.model_variant = "lite-ft"
+                print(f"[SRService] Loaded fine-tuned Lite weights from {ft_ckpt}")
             self._pipelines[normalized] = pipeline
             print(f"[SRService] Initialized and cached '{normalized}' pipeline on {self.device}")
             return pipeline
@@ -318,6 +354,20 @@ class SRService:
                 "output_gsd": "2.5m",
                 "upscale_factor": 4,
                 "ready": checkpoint_swin_ready,
+            },
+            {
+                "id": "lite-ft",
+                "name": "SEN2SR-Lite FT",
+                "tag": "Fine-Tuned",
+                "params": "~0.47M",
+                "architecture": "CNN (SPAN), Wald fine-tuned",
+                "description": "Project fine-tuned Lite (Wald pairs, 5 epochs)",
+                "purpose": "Fine-tuned model",
+                "bands": 10,
+                "input_gsd": "10m",
+                "output_gsd": "2.5m",
+                "upscale_factor": 4,
+                "ready": find_lite_ft_checkpoint(self.workspace_root) is not None,
             },
         ]
 
@@ -403,9 +453,16 @@ class SRService:
 
             # Resolve requested model variant
             requested_model = getattr(request, "model", "lite") or "lite"
-            model_variant = "swin2sr" if str(requested_model).lower() in ("swin", "swin2sr", "sen2sr") else "lite"
-            model_display_name = "SEN2SR-Swin2SR" if model_variant == "swin2sr" else "SEN2SR-Lite"
-            model_tag = "swin" if model_variant == "swin2sr" else "lite"
+            model_variant = normalize_variant(requested_model)
+            if model_variant == "swin2sr":
+                model_display_name = "SEN2SR-Swin2SR"
+                model_tag = "swin"
+            elif model_variant == "lite-ft":
+                model_display_name = "SEN2SR-Lite FT"
+                model_tag = "lite-ft"
+            else:
+                model_display_name = "SEN2SR-Lite"
+                model_tag = "lite"
 
             self._update_progress(job_id, "processing", f"Loading {model_display_name} weights...", 15)
             pipeline = self.get_pipeline(model_variant)
@@ -679,7 +736,7 @@ class SRService:
         request : InferenceRequest
             Job request; ``uncertainty_members`` of ``None`` selects the automatic policy.
         model_variant : str
-            Resolved model identifier (``"lite"`` or ``"swin2sr"``).
+            Resolved model identifier (``"lite"``, ``"lite-ft"`` or ``"swin2sr"``).
 
         Returns
         -------

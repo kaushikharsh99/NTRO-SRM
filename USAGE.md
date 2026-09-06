@@ -43,6 +43,17 @@ Select your desired super-resolution neural network in the sidebar before clicki
   - Architecture: Vision Transformer (Swin2SR) + State-Space (MambaSR)
   - Memory Footprint: ~2.46 GB VRAM on CUDA
   - Best for: Complex structural detail, fine edge reconstruction, and dense infrastructure.
+- **SEN2SR-Lite FT (Project Fine-Tuned):**
+  - Same Lite architecture (~2s inference). `lite-ft` now serves the **distilled**
+    weights when present (`outputs/finetune/lite_distill_best.pt`, Swin2SR->Lite
+    on 80 cached 128px tiles, 62 train / 18 val, test sites held out), falling
+    back to Wald/NAIP fine-tune (`lite_ft_best.pt`).
+  - Distilled held-out checks (IND_DELHI_URBAN, never distilled): closest to the
+    Swin teacher in pixel + gradient fidelity (beats base and FT on both test
+    tiles); source-consistency RMSE better than base (Mountain Lake 0.0114 vs
+    0.0123; Delhi 0.0187 vs 0.0206).
+  - Select `lite-ft` in the Web UI, CLI (`--model lite-ft`), or REST (`model=lite-ft`).
+  - Requires `outputs/finetune/lite_distill_best.pt` (or `lite_ft_best.pt`); if missing, run the distill or fine-tune script first (see “Model training” below).
 
 #### 3. Real-Time Processing & Telemetry
 Click **"UPSCALE PATCH TO 2.5m"**. The application tracks:
@@ -53,6 +64,8 @@ Click **"UPSCALE PATCH TO 2.5m"**. The application tracks:
 Once inference completes, Leaflet map overlays are dynamically rendered:
 - **Swipe Split View (Default):** Drag the horizontal slider left/right to compare native $10\text{m}$ input against $2.5\text{m}$ super-resolved output.
 - **Side Selection:** Switch the left comparison pane between **Native 10m S2** and **Bicubic 2.5m Baseline**.
+- **Cross-Model Compare:** Click **Compare Lite vs FT** to run both models on the same area back-to-back; the swipe then shows Lite vs FT automatically. Any previous same-area run can also be picked from the **Left** dropdown as **Previous: MODEL**.
+- **Difference Heatmap:** With a previous run active, click **Diff** to overlay an amplified FT-vs-previous heatmap (99th-percentile saturated; the factor is shown in the label, e.g. `Amplified Δ ×66`). Bright means the fine-tune changed the reconstruction there — typically edges and boundaries.
 - **Continuous Opacity Blend:** Switch to **Blend** mode and adjust the opacity slider from 0% to 100%.
 - **Single Layer Mode:** Toggle **10m Native Only** or **2.5m SR Only**.
 
@@ -132,6 +145,40 @@ python scripts/sr_sentinel2.py \
 python scripts/compare_models.py
 ```
 This generates side-by-side triptych comparisons saved in `outputs/comparisons/`.
+
+#### Example 6: Compare Base Lite vs Best (Distilled) Weights
+```bash
+python scripts/compare_ft.py --input datasets/sample_s2/sample_s2_l2a.tif
+# Compare against the older Wald/NAIP fine-tune instead:
+python scripts/compare_ft.py --checkpoint outputs/finetune/lite_ft_best.pt
+```
+
+---
+
+## 2b. Model Training (Fine-Tune & Distillation)
+
+Wald/NAIP fine-tuning (small moves, same architecture):
+
+```bash
+venv/bin/python scripts/finetune_lite.py --epochs 5                              # Wald warmup
+venv/bin/python scripts/finetune_lite.py --epochs 8 --pair-types wald,real_paired \
+  --resume outputs/finetune/lite_ft_best.pt --lr 5e-5 --grad-weight 0.4 \
+  --scheduler cosine --augment --batch-size 8
+```
+
+Swin2SR → Lite distillation (visible edge transfer, same ~2s inference).
+Teacher targets are cached once (~55 min on MPS, resumable), training takes minutes:
+
+```bash
+venv/bin/python scripts/cache_teacher.py            # one-time: 80 tiles -> datasets/distill_cache/
+venv/bin/python scripts/distill_lite.py             # 10 epochs, init from best FT weights
+# Continue a finished run for further gains (adopts new LR/schedule):
+venv/bin/python scripts/distill_lite.py --init-checkpoint outputs/finetune/lite_distill_best.pt \
+  --output outputs/finetune/lite_distill_v2.pt --lr 2e-5 --epochs 10
+```
+
+`lite-ft` (Web/CLI/REST) automatically serves `lite_distill_best.pt` when present,
+else `lite_ft_best.pt`.
 
 ---
 

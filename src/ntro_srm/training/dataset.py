@@ -47,6 +47,10 @@ class PairedS2Dataset(Dataset):
         split: str | None = None,
         normalize: bool = True,
         wald_scale: int = 4,
+        pair_types: list[str] | tuple[str, ...] | None = None,
+        tile_lr: int = 32,
+        tile_stride: int = 32,
+        augment: bool = False,
     ) -> None:
         self.manifest = Path(manifest)
         if not self.manifest.is_file():
@@ -55,15 +59,46 @@ class PairedS2Dataset(Dataset):
             rows = [r for r in csv.DictReader(fh) if r.get("pair_id")]
         if split is not None:
             rows = [r for r in rows if r.get("split") == split]
+        if pair_types is not None:
+            wanted = set(pair_types)
+            rows = [r for r in rows if r.get("pair_type", "wald_synthetic") in wanted]
         if not rows:
             raise ValueError(f"No pairs in {self.manifest} for split={split!r}")
-        self.rows = rows
         self.root = self.manifest.parent
         self.normalize = normalize
         self.wald_scale = wald_scale
+        self.tile_lr = tile_lr
+        self.tile_stride = tile_stride
+        self.augment = augment
+        self._cache: dict[str, torch.Tensor] = {}
+        # Expand rows into fixed-size tile specs. Wald rows are already
+        # single tiles; full-scene real rows are split into a tile grid so
+        # every batch stacks to identical shapes.
+        self.specs: list[tuple[dict, int, int]] = []
+        for row in rows:
+            if row.get("pair_type", "wald_synthetic") == "wald_synthetic":
+                self.specs.append((row, 0, 0))
+            else:
+                h = int(row.get("lr_h", 0)) or 0
+                w = int(row.get("lr_w", 0)) or 0
+                self.specs.extend((row, ty, tx) for ty, tx in self._tile_grid(h, w))
+        if not self.specs:
+            raise ValueError(f"No tiles in {self.manifest} for split={split!r}")
+
+    def _tile_grid(self, h: int, w: int) -> list[tuple[int, int]]:
+        t, s = self.tile_lr, self.tile_stride
+        if h <= 0 or w <= 0:
+            return [(0, 0)]
+        ys = list(range(0, max(1, h - t + 1), s))
+        xs = list(range(0, max(1, w - t + 1), s))
+        if ys[-1] + t < h:
+            ys.append(h - t)
+        if xs[-1] + t < w:
+            xs.append(w - t)
+        return [(y, x) for y in ys for x in xs]
 
     def __len__(self) -> int:
-        return len(self.rows)
+        return len(self.specs)
 
     def _resolve(self, path: str) -> Path:
         p = Path(path)
@@ -84,39 +119,83 @@ class PairedS2Dataset(Dataset):
                     "descriptions": list(src.descriptions or [])}
         return arr, meta
 
-    def __getitem__(self, idx: int) -> PairedSample:
-        row = self.rows[idx]
-        pair_type = row.get("pair_type", "wald_synthetic")
-        s2_arr, _ = self._read(row["s2_path"])
-        s2 = torch.from_numpy(s2_arr)
-        if self.normalize:
-            s2 = normalize_sentinel2_l2a(s2, mode="auto", nodata_value=None)
+    def _cached_s2(self, path: str) -> torch.Tensor:
+        if path not in self._cache:
+            arr, _ = self._read(path)
+            s2 = torch.from_numpy(arr)
+            if self.normalize:
+                s2 = normalize_sentinel2_l2a(s2, mode="auto", nodata_value=None)
+            self._cache[path] = s2.float()
+        return self._cache[path]
 
-        y, x = int(row.get("tile_y", 0)), int(row.get("tile_x", 0))
-        lr_h, lr_w = int(row.get("lr_h", 32)), int(row.get("lr_w", 32))
+    def __getitem__(self, idx: int) -> PairedSample:
+        row, dty, dtx = self.specs[idx]
+        pair_type = row.get("pair_type", "wald_synthetic")
+        t = self.tile_lr
         if pair_type == "wald_synthetic":
+            s2 = self._cached_s2(row["s2_path"])
+            y, x = int(row.get("tile_y", 0)), int(row.get("tile_x", 0))
+            lr_h, lr_w = int(row.get("lr_h", 32)), int(row.get("lr_w", 32))
             # HR target = real S2 window at 10m; LR source = Wald 40m.
             hr = s2[:, y:y + lr_h * 4, x:x + lr_w * 4]
             lr = wald_degrade(hr, scale=self.wald_scale)
             mask = torch.ones(10)
+            meta = {"pair_id": row["pair_id"], "pair_type": pair_type,
+                    "site_id": row.get("site_id", ""), "split": row.get("split", "")}
         else:
-            hr_arr, _ = self._read(row["hr_path"])
-            hr = torch.from_numpy(hr_arr)
-            if self.normalize:
-                # HR refs are typically uint8 RGBN or float; scale heuristically.
-                hr = normalize_sentinel2_l2a(hr, mode="auto", nodata_value=None)
-            lr = s2[:, y:y + lr_h, x:x + lr_w]
+            s2 = self._cached_s2(row["s2_path"])
+            y, x = int(row.get("tile_y", 0)), int(row.get("tile_x", 0))
+            lr_h, lr_w = int(row.get("lr_h", 32)), int(row.get("lr_w", 32))
+            key = f"hr::{row['hr_path']}"
+            if key not in self._cache:
+                hr_arr, _ = self._read(row["hr_path"])
+                hr_full = torch.from_numpy(hr_arr)
+                if self.normalize:
+                    # HR refs are typically uint8 RGBN or float; scale heuristically.
+                    hr_full = normalize_sentinel2_l2a(hr_full, mode="auto", nodata_value=None)
+                self._cache[key] = hr_full.float()
+            hr_scene = self._cache[key]
+            lr_window = s2[:, y:y + lr_h, x:x + lr_w]
+            # Align HR to 4x the LR window (refs are pre-resampled to 2.5m).
+            expect_h, expect_w = lr_window.shape[-2] * 4, lr_window.shape[-1] * 4
+            if tuple(hr_scene.shape[-2:]) != (expect_h, expect_w):
+                hr_scene = torch.nn.functional.interpolate(
+                    hr_scene.unsqueeze(0), size=(expect_h, expect_w),
+                    mode="bilinear", align_corners=False).squeeze(0)
+            lr = lr_window[:, dty:dty + t, dtx:dtx + t]
+            hr_crop = hr_scene[:, dty * 4:(dty + t) * 4, dtx * 4:(dtx + t) * 4]
             # Supervise common RGBN bands only; keep 10-band shape with mask.
             mask = torch.zeros(10)
             common = (row.get("common_bands", "B02,B03,B04,B08") or "").split(",")
-            hr_full = torch.zeros_like(lr.repeat_interleave(4, dim=-2).repeat_interleave(4, dim=-1))
+            hr = torch.zeros(10, t * 4, t * 4)
             for band in [b.strip() for b in common if b.strip() in _S2_INDEX]:
                 s2_i = _S2_INDEX[band]
-                if band in _RGBN_INDEX and _RGBN_INDEX[band] < hr.shape[0]:
-                    hr_full[s2_i] = hr[_RGBN_INDEX[band]]
+                if band in _RGBN_INDEX and _RGBN_INDEX[band] < hr_crop.shape[0]:
+                    hr[s2_i] = hr_crop[_RGBN_INDEX[band]]
                     mask[s2_i] = 1.0
-            hr = hr_full
+            # Cross-sensor radiometry: NAIP DNs (0-255) are not S2 reflectance.
+            # Match each supervised band's mean/std to the LR tile so the model
+            # learns texture/detail instead of a global brightness bias.
+            for s2_i in range(10):
+                if mask[s2_i].item() > 0:
+                    ref, obs = hr[s2_i], lr[s2_i]
+                    std = ref.std() + 1e-6
+                    hr[s2_i] = (ref - ref.mean()) / std * (obs.std() + 1e-6) + obs.mean()
+            meta = {"pair_id": f"{row['pair_id']}@{dty},{dtx}", "pair_type": pair_type,
+                    "site_id": row.get("site_id", ""), "split": row.get("split", "")}
+        if self.augment:
+            lr, hr = self._augment_pair(lr, hr)
         return PairedSample(lr=lr.float(), hr=hr.float(), band_mask=mask,
-                            meta={"pair_id": row["pair_id"], "pair_type": pair_type,
-                                  "site_id": row.get("site_id", ""),
-                                  "split": row.get("split", "")})
+                            meta=meta)
+
+    @staticmethod
+    def _augment_pair(lr: torch.Tensor, hr: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply identical random flip/rot90 to an LR/HR tile pair."""
+        if torch.rand(()) < 0.5:
+            lr, hr = torch.flip(lr, [-1]), torch.flip(hr, [-1])
+        if torch.rand(()) < 0.5:
+            lr, hr = torch.flip(lr, [-2]), torch.flip(hr, [-2])
+        k = int(torch.randint(0, 4, (1,)).item())
+        if k:
+            lr, hr = torch.rot90(lr, k, [-2, -1]), torch.rot90(hr, k, [-2, -1])
+        return lr, hr

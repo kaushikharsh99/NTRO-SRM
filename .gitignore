@@ -56,6 +56,9 @@ datasets/raw_hr/*
 !datasets/raw_hr/.gitkeep
 datasets/paired/*.tif
 datasets/paired/*_src.tif
+# Distillation: teacher targets are reproducible via scripts/cache_teacher.py (~800MB)
+datasets/distill_cache/*
+!datasets/distill_cache/.gitkeep
 
 # IDEs & OS
 .vscode/

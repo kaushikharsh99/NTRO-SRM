@@ -122,10 +122,14 @@
                         <select id="select-left-layer" class="select-sm">
                             <option value="lr" selected>Original</option>
                             <option value="bicubic">Bicubic</option>
+                            <option value="prev" id="opt-prev-layer" disabled>Previous run</option>
                         </select>
                         <button id="btn-zoom-patch" class="btn-toggle btn-icon-text" title="Center map directly onto the loaded patch">
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                             Fit
+                        </button>
+                        <button id="btn-toggle-diff" class="btn-toggle btn-icon-text" disabled title="Show amplified FT-vs-previous difference heatmap">
+                            Diff
                         </button>
                     </div>
                 </div>
@@ -397,6 +401,19 @@
                                     </div>
                                 </div>
                             </label>
+
+                            <label class="model-option-card" for="model-radio-liteft" id="label-model-liteft">
+                                <input type="radio" name="sr-model" id="model-radio-liteft" value="lite-ft">
+                                <div class="model-option-content">
+                                    <div class="model-name-row">
+                                        <span class="model-title">SEN2SR-Lite FT</span>
+                                        <span class="model-meta">Tuned</span>
+                                    </div>
+                                    <div class="model-desc">
+                                        Wald fine-tuned Lite
+                                    </div>
+                                </div>
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -405,6 +422,9 @@
                 <div class="upscale-action-card" id="upscale-action-card">
                     <button id="btn-run-sr" type="button" class="btn btn-accent btn-block btn-lg" disabled>
                         <span>Process area</span>
+                    </button>
+                    <button id="btn-compare-models" type="button" class="btn btn-secondary btn-block" disabled title="Run Lite and Lite-FT on this area, then swipe between them">
+                        <span>Compare Lite vs FT</span>
                     </button>
                     <div class="upscale-explainer">
                         <span id="upscale-explainer-text"><strong>SEN2SR-Lite</strong> &bull; 10 m &rarr; 2.5 m</span>

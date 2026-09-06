@@ -62,8 +62,8 @@ def parse_args() -> argparse.Namespace:
         "-m",
         type=str,
         default="lite",
-        choices=["lite"],
-        help="Model architecture variant.",
+        choices=["lite", "lite-ft"],
+        help="Model architecture variant ('lite-ft' loads Wald fine-tuned weights).",
     )
     parser.add_argument(
         "--norm-mode",
@@ -117,7 +117,8 @@ def main() -> int:
 
     # 2. Pipeline Initialization
     print("INITIALIZING MODEL:")
-    print(f"  Model Variant:   SEN2SR-{args.model.capitalize()}")
+    model_label = "SEN2SR-Lite FT" if args.model == "lite-ft" else "SEN2SR-Lite"
+    print(f"  Model Variant:   {model_label}")
     print(f"  Device:          {args.device}")
     if args.device == "cuda":
         print(f"  CUDA Device:     {torch.cuda.get_device_name(0)}")
@@ -126,9 +127,22 @@ def main() -> int:
 
     try:
         pipeline = Sentinel2SRPipeline(
-            model_variant=args.model,
+            model_variant="lite",
             device=args.device,
         )
+        if args.model == "lite-ft":
+            from ntro_srm.training.trainer import find_ft_checkpoint, load_checkpoint
+
+            ft_ckpt = find_ft_checkpoint(project_root)
+            if ft_ckpt is None:
+                print("[ERROR] Fine-tuned weights not found. Run "
+                      "'python scripts/finetune_lite.py --epochs 5' first.")
+                return 1
+            load_checkpoint(ft_ckpt, pipeline.model)
+            pipeline.model.set_trainable(False)
+            pipeline.model.eval()
+            pipeline.model.model_variant = "lite-ft"
+            print(f"  Fine-tuned weights: {ft_ckpt}")
     except Exception as err:
         print(f"[ERROR] Failed to load model: {err}")
         return 1

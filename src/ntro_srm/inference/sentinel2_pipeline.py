@@ -159,7 +159,13 @@ class Sentinel2SRPipeline:
         # 5. Optionally write to GeoTIFF
         saved_path: Optional[Path] = None
         if output_path is not None:
-            model_label = "SEN2SR-Swin2SR" if self.model.model_variant == "swin2sr" else "SEN2SR-Lite"
+            variant = self.model.model_variant
+            if variant == "swin2sr":
+                model_label = "SEN2SR-Swin2SR"
+            elif variant == "lite-ft":
+                model_label = "SEN2SR-Lite FT"
+            else:
+                model_label = "SEN2SR-Lite"
             saved_path = write_sr_geotiff(
                 output_path=output_path,
                 tensor=sr_tensor,
