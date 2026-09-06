@@ -191,6 +191,11 @@ separately from reference accuracy: agreement after downsampling to 10 m does
 not prove that reconstructed 2.5 m details are correct. See
 **[EVALUATION.md](EVALUATION.md)** for metric definitions and usage.
 
+Completed web jobs also expose radiometric consistency, a novelty-based
+confidence surface, ten crop/water/urban/burn indices, and downloadable JSON and
+Markdown QA reports. Wald validation and multi-pass uncertainty are available as
+explicit options because they require additional model inference.
+
 For paired-data fine-tuning, `SpectralSpatialLoss` combines robust pixel
 reconstruction, spectral-vector agreement, spatial-gradient preservation,
 low-resolution observation consistency, and physical reflectance constraints.

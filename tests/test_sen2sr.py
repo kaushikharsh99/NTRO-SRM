@@ -168,3 +168,38 @@ class TestSEN2SRAdapter:
             sen2sr_model.set_trainable(False)
         assert sen2sr_model.model.training is False
         assert not any(parameter.requires_grad for parameter in sen2sr_model.model.parameters())
+
+    def test_optimizer_created_before_fine_tuning_updates_backbone(self, monkeypatch):
+        class TinyBackbone(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.projection = torch.nn.Conv2d(10, 10, kernel_size=1)
+                self.refreshed = False
+
+            def forward(self, value: torch.Tensor) -> torch.Tensor:
+                result = self.projection(value)
+                if not self.refreshed:
+                    self.projection.weight.data = self.projection.weight.detach().clone()
+                    self.refreshed = True
+                return result
+
+        with torch.inference_mode():
+            backbone = TinyBackbone()
+        monkeypatch.setattr(SEN2SRModel, "_load_model", lambda self, auto_download: backbone)
+        model = SEN2SRModel(device="cpu", auto_download=False)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        optimizer_parameter = optimizer.param_groups[0]["params"][0]
+
+        model.predict(torch.ones(1, 10, 4, 4), auto_normalize=False)
+        assert optimizer_parameter.is_inference()
+        model.set_trainable(True)
+        backbone_parameter = next(model.model.parameters())
+        assert optimizer_parameter is backbone_parameter
+        assert not backbone_parameter.is_inference()
+        before = backbone_parameter.detach().clone()
+
+        optimizer.zero_grad()
+        model(torch.ones(1, 10, 4, 4)).square().mean().backward()
+        optimizer.step()
+
+        assert not torch.equal(before, backbone_parameter.detach())
