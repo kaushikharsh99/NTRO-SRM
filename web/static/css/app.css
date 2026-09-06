@@ -2637,3 +2637,14 @@ body {
 .scenes-list {
     overscroll-behavior: contain;
 }
+
+/* Locate-me button loading state */
+#btn-locate-me.locating {
+    opacity: 0.65;
+    pointer-events: none;
+}
+
+#btn-locate-me:disabled {
+    opacity: 0.65;
+    cursor: wait;
+}

@@ -32,6 +32,9 @@
         },
         jobResult: null,
         uploadedFile: null,
+        userLocationMarker: null,
+        userLocationCircle: null,
+        isLocating: false,
     };
 
     // DOM Element References (initialized on start)
@@ -62,6 +65,7 @@
             srOpacitySlider: document.getElementById("sr-opacity-slider"),
             srOpacityVal: document.getElementById("sr-opacity-val"),
             btnZoomPatch: document.getElementById("btn-zoom-patch"),
+            btnLocateMe: document.getElementById("btn-locate-me"),
             dateFrom: document.getElementById("date-from"),
             dateTo: document.getElementById("date-to"),
             cloudCover: document.getElementById("cloud-cover"),
@@ -288,6 +292,119 @@
                 selectQuickLocation(lat, lon, name);
             }
         });
+    }
+
+    // =========================================================================
+    // 2b. User Geolocation — center map + AOI on device location
+    // =========================================================================
+    function initUserLocation() {
+        if (!elements.btnLocateMe) return;
+        elements.btnLocateMe.addEventListener("click", () => {
+            if (!state.map || state.isLocating) return;
+
+            if (!("geolocation" in navigator)) {
+                if (elements.aoiDisplayStatus) {
+                    elements.aoiDisplayStatus.textContent = "Geolocation not supported in this browser";
+                }
+                return;
+            }
+
+            state.isLocating = true;
+            elements.btnLocateMe.disabled = true;
+            elements.btnLocateMe.classList.add("locating");
+            const originalLabel = elements.btnLocateMe.innerHTML;
+            elements.btnLocateMe.innerHTML = "Locating…";
+            if (elements.aoiDisplayStatus) {
+                elements.aoiDisplayStatus.textContent = "Locating… allow browser location access";
+            }
+
+            const resetButton = () => {
+                state.isLocating = false;
+                if (elements.btnLocateMe) {
+                    elements.btnLocateMe.disabled = false;
+                    elements.btnLocateMe.classList.remove("locating");
+                    elements.btnLocateMe.innerHTML = originalLabel;
+                }
+            };
+
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    resetButton();
+                    centerOnUserLocation(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+                },
+                (err) => {
+                    resetButton();
+                    let msg = "Unable to get your location";
+                    if (err && err.code === 1) {
+                        msg = "Location permission denied — allow access in browser site settings";
+                    } else if (err && err.code === 2) {
+                        msg = "Location unavailable — check GPS/network connection";
+                    } else if (err && err.code === 3) {
+                        msg = "Location request timed out — try again";
+                    }
+                    if (elements.aoiDisplayStatus) {
+                        elements.aoiDisplayStatus.textContent = msg;
+                    }
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+            );
+        });
+    }
+
+    function centerOnUserLocation(lat, lon, accuracy) {
+        if (!state.map || isNaN(lat) || isNaN(lon)) return;
+        clearOverlays();
+
+        document.querySelectorAll(".preset-chip").forEach((el) => el.classList.remove("active"));
+
+        const deltaLat = (1.5 / 110.574) / 2;
+        const deltaLon = (1.5 / (111.32 * Math.cos((lat * Math.PI) / 180))) / 2;
+        const bounds = L.latLngBounds(
+            [lat - deltaLat, lon - deltaLon],
+            [lat + deltaLat, lon + deltaLon]
+        );
+
+        state.map.setView([lat, lon], 14, { animate: true });
+        setAoiFromBounds(bounds);
+
+        if (state.userLocationMarker) {
+            state.map.removeLayer(state.userLocationMarker);
+            state.userLocationMarker = null;
+        }
+        if (state.userLocationCircle) {
+            state.map.removeLayer(state.userLocationCircle);
+            state.userLocationCircle = null;
+        }
+
+        if (accuracy && isFinite(accuracy)) {
+            state.userLocationCircle = L.circle([lat, lon], {
+                radius: Math.max(accuracy, 10),
+                color: "#007aff",
+                weight: 1.5,
+                fillColor: "#007aff",
+                fillOpacity: 0.12,
+            }).addTo(state.map);
+        }
+        state.userLocationMarker = L.circleMarker([lat, lon], {
+            radius: 8,
+            color: "#ffffff",
+            weight: 2.5,
+            fillColor: "#007aff",
+            fillOpacity: 1,
+        }).addTo(state.map);
+
+        if (elements.aoiBadge) {
+            elements.aoiBadge.textContent = "My location";
+            elements.aoiBadge.className = "badge badge-success";
+        }
+        if (elements.aoiDisplayStatus) {
+            elements.aoiDisplayStatus.textContent = "Centered on your location";
+        }
+
+        const tabBtnSelect = document.getElementById("tab-btn-select");
+        if (tabBtnSelect && !tabBtnSelect.classList.contains("active")) {
+            tabBtnSelect.click();
+        }
     }
 
     // =========================================================================
@@ -1225,6 +1342,7 @@
         elements = getElements();
         initMap();
         initQuickLocations();
+        initUserLocation();
         initTabs();
         initAoiControls();
         initUpload();
