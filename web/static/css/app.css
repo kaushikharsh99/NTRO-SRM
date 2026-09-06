@@ -2599,3 +2599,41 @@ body {
         right: 0;
     }
 }
+
+/* ==========================================================================
+   Sidebar scroll fix — flex column must not squash children; panel scrolls
+   ========================================================================== */
+.sidebar-panel {
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    min-height: 0;
+}
+
+.sidebar-panel > * {
+    flex-shrink: 0;
+}
+
+.sidebar-tabs {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    flex-shrink: 0;
+}
+
+.tab-content {
+    min-height: min-content;
+}
+
+.tab-content.active {
+    flex-shrink: 0;
+}
+
+.search-results-container,
+.scenes-list {
+    overscroll-behavior: contain;
+}
