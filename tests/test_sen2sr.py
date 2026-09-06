@@ -14,6 +14,7 @@ from ntro_srm.preprocessing.transforms import (
     rgbn_to_s2_10band,
     s2_10band_to_rgbn,
 )
+from ntro_srm.utils.device import mps_available
 
 
 @pytest.fixture(scope="module")
@@ -203,3 +204,26 @@ class TestSEN2SRAdapter:
         optimizer.step()
 
         assert not torch.equal(before, backbone_parameter.detach())
+
+    @pytest.mark.skipif(not mps_available(), reason="Apple MPS is unavailable")
+    def test_lite_inference_runs_on_apple_mps(self):
+        checkpoint = Path(__file__).resolve().parents[1] / "checkpoints" / "SEN2SRLite"
+        model = SEN2SRModel(
+            model_variant="lite",
+            device="mps",
+            checkpoint_dir=checkpoint,
+            auto_download=False,
+        )
+
+        masks = [
+            module.low_pass_mask
+            for module in model.model.modules()
+            if isinstance(getattr(module, "low_pass_mask", None), torch.Tensor)
+        ]
+        output = model.predict(torch.rand(1, 10, 16, 16), auto_normalize=False)
+        torch.mps.synchronize()
+
+        assert next(model.model.parameters()).device.type == "mps"
+        assert masks and all(mask.device.type == "mps" for mask in masks)
+        assert output.shape == (1, 10, 64, 64)
+        assert torch.isfinite(output).all()

@@ -84,7 +84,7 @@ python scripts/sr_sentinel2.py \
   --input <path_to_input_geotiff> \
   --output <path_to_output_geotiff> \
   [--model {lite,swin2sr}] \
-  [--device {cuda,cpu}] \
+  [--device {cuda,mps,cpu}] \
   [--overlap OVERLAP_PIXELS]
 ```
 
@@ -118,7 +118,16 @@ python scripts/sr_sentinel2.py \
   --device cpu
 ```
 
-#### Example 4: Run Dual Model Benchmark Script
+#### Example 4: Apple Silicon GPU Execution
+```bash
+python scripts/sr_sentinel2.py \
+  --input datasets/sample_s2/sample_s2_l2a.tif \
+  --output outputs/sample_s2_mps_2.5m.tif \
+  --model lite \
+  --device mps
+```
+
+#### Example 5: Run Dual Model Benchmark Script
 ```bash
 python scripts/compare_models.py
 ```
@@ -138,7 +147,7 @@ from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline
 # 1. Initialize pipeline with requested model variant
 pipeline = Sentinel2SRPipeline(
     model_variant="swin2sr",  # or "lite"
-    device="cuda",            # or "cpu"
+    device=None,              # auto: CUDA, then Apple MPS, then CPU
 )
 
 # 2. Execute 4x super-resolution and export to GeoTIFF
@@ -179,7 +188,7 @@ The FastAPI backend exposes the following RESTful endpoints:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/system-info` | `GET` | Returns GPU name, available VRAM, CUDA status, and model metadata. |
+| `/api/system-info` | `GET` | Returns the active device, CUDA/MPS availability, VRAM when available, and model metadata. |
 | `/api/demo/info` | `GET` | Returns metadata of pre-installed local Sentinel-2 sample scene. |
 | `/api/sentinel/search` | `POST` | Queries STAC catalog (CDSE or AWS Earth Search) for cloud-free Sentinel-2 scenes. |
 | `/api/sr/process` | `POST` | Enqueues background super-resolution job for specified AOI and model. |

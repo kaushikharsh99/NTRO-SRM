@@ -26,6 +26,7 @@ from ntro_srm.data.sentinel2 import Sentinel2Reader
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline, Sentinel2SRResult
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
 from ntro_srm.utils.geotiff import write_sr_geotiff
+from ntro_srm.utils.device import device_name, mps_available, select_device
 from ntro_srm.web.services.analysis_service import (
     COMPOSITES,
     AnalysisService,
@@ -201,11 +202,7 @@ class SRService:
         self.cache_dir = self.workspace_root / "datasets" / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Compute device
-        if device is None:
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
+        self.device = str(select_device(device))
 
         self.model_variant = model_variant
         self._lock = threading.Lock()
@@ -275,12 +272,13 @@ class SRService:
     def get_system_info(self) -> SystemInfoResponse:
         """Query GPU, compute environment status, and model metadata."""
         cuda_avail = torch.cuda.is_available()
-        gpu_name = "CPU"
+        mps_avail = mps_available()
+        device_type = torch.device(self.device).type
+        gpu_name = device_name(self.device)
         vram_total = None
         vram_free = None
 
-        if cuda_avail:
-            gpu_name = torch.cuda.get_device_name(0)
+        if device_type == "cuda":
             mem_info = torch.cuda.mem_get_info()
             vram_free = round(mem_info[0] / (1024**3), 2)
             vram_total = round(mem_info[1] / (1024**3), 2)
@@ -328,6 +326,10 @@ class SRService:
 
         return SystemInfoResponse(
             cuda_available=cuda_avail,
+            mps_available=mps_avail,
+            accelerator_available=cuda_avail or mps_avail,
+            accelerator_active=device_type in {"cuda", "mps"},
+            device_type=device_type,
             device_name=gpu_name,
             vram_total_gb=vram_total,
             vram_free_gb=vram_free,

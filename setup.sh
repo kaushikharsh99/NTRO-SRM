@@ -90,8 +90,11 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader | head -n 1)
     echo "      Detected NVIDIA GPU: ${GPU_NAME} (${GPU_MEM})"
     echo "      CUDA hardware acceleration will be enabled."
+elif [ "$(uname -s)" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+    echo "      Detected Apple Silicon GPU."
+    echo "      PyTorch MPS acceleration will be enabled when available."
 else
-    echo "      No NVIDIA GPU detected. Framework will run in CPU fallback mode."
+    echo "      No supported GPU detected. Framework will run on CPU."
 fi
 
 # 3. Create or verify virtual environment

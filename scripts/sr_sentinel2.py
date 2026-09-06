@@ -27,6 +27,7 @@ import torch
 
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline, Sentinel2SRResult
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
+from ntro_srm.utils.device import select_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,8 +53,8 @@ def parse_args() -> argparse.Namespace:
         "--device",
         "-d",
         type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        choices=["cuda", "cpu"],
+        default=str(select_device()),
+        choices=["cuda", "mps", "cpu"],
         help="Compute device for neural network inference.",
     )
     parser.add_argument(
@@ -120,6 +121,8 @@ def main() -> int:
     print(f"  Device:          {args.device}")
     if args.device == "cuda":
         print(f"  CUDA Device:     {torch.cuda.get_device_name(0)}")
+    elif args.device == "mps":
+        print("  Apple GPU:       Metal Performance Shaders")
 
     try:
         pipeline = Sentinel2SRPipeline(
