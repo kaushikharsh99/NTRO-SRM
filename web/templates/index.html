@@ -10,7 +10,7 @@
     <script src="/static/vendor/leaflet/leaflet.js"></script>
     
     <!-- Application Styling -->
-    <link rel="stylesheet" href="/static/css/app.css?v=4.0">
+    <link rel="stylesheet" href="/static/css/app.css?v=5.0">
 </head>
 <body>
     <div class="app-container">
@@ -153,7 +153,10 @@
                 <div id="tab-select" class="tab-content active">
                     <div class="sidebar-card">
                         <div class="card-header">
-                            <span class="card-title-text">Area</span>
+                            <div class="card-title-group">
+                                <span class="card-title-text">Select an area</span>
+                                <span class="card-subtitle">Draw on the map or choose a saved location.</span>
+                            </div>
                             <span id="aoi-badge" class="badge badge-gray">Not selected</span>
                         </div>
                         <div class="card-body">
@@ -253,7 +256,10 @@
                 <div id="tab-upload" class="tab-content">
                     <div class="sidebar-card">
                         <div class="card-header">
-                            <span class="card-title-text">Upload GeoTIFF</span>
+                            <div class="card-title-group">
+                                <span class="card-title-text">Upload GeoTIFF</span>
+                                <span class="card-subtitle">Use a local image instead of the catalog.</span>
+                            </div>
                         </div>
                         <div class="card-body">
                             <!-- Drag and Drop Dropzone -->
@@ -293,7 +299,10 @@
                 <div id="tab-catalog" class="tab-content">
                     <div class="sidebar-card">
                         <div class="card-header">
-                            <span class="card-title-text">Sentinel-2 catalog</span>
+                            <div class="card-title-group">
+                                <span class="card-title-text">Sentinel-2 catalog</span>
+                                <span class="card-subtitle">Find imagery for the selected area.</span>
+                            </div>
                             {% if sys_info.cdse_configured %}
                             <span class="badge badge-success">Copernicus CDSE</span>
                             {% else %}
@@ -350,7 +359,10 @@
                 <!-- Model Selector Card -->
                 <div class="sidebar-card model-selector-card">
                     <div class="card-header">
-                        <span class="card-title-text">Model</span>
+                        <div class="card-title-group">
+                            <span class="card-title-text">Processing model</span>
+                            <span class="card-subtitle">Choose speed or added detail.</span>
+                        </div>
                     </div>
                     <div class="card-body">
                         <div class="model-option-group">
