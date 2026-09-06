@@ -109,6 +109,25 @@ train, validation, and test separation is required to avoid leakage.
 6. Validate one downstream task, such as field-boundary extraction or flood mapping.
 7. Expand the real paired set and quantify temporal and alignment error.
 
+## Multi-temporal fusion milestone (large-gain track, DONE 2026-09-07)
+
+Single-image 4x SR is information-capped (Swin2SR ties Lite), so new
+information comes from time. `scripts/fetch_temporal.py` fetches K
+co-registered low-cloud dates per site onto the reference grid (same-tile S2
+aligns natively; ±3px phase refine + 45-day window guard).
+`src/ntro_srm/training/temporal.py` builds K-frame Wald samples; naive K-mean
+does NOT beat K=1 on changed scenes. `src/ntro_srm/training/fusion.py`
+learns per-pixel frame attention over a frozen FT backbone (~10k params,
+cached SR frames). Held-out results, identical metric:
+
+| split | K=1 pixel | fused pixel | spectral | source |
+|---|---|---|---|---|
+| val (Bengaluru) | 0.02078 | **0.01903 (-8%)** | -15% | -29% |
+| test (Delhi) | 0.01636 | **0.01498 (-8%)** | -16% | -32% |
+
+Demo: `scripts/demo_temporal.py --site IND_DELHI_URBAN` (triptych +
+amplified fused-vs-single heatmap in `outputs/comparisons/`).
+
 ## Distillation milestone (Swin2SR -> Lite, DONE 2026-09-07)
 
 Wald/NAIP fine-tuning moved Lite by mean |FT-base| ~0.003 reflectance
