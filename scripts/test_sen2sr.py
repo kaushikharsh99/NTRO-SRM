@@ -2,7 +2,7 @@
 """Verification script for NTRO-SRM SEN2SR adapter.
 
 Validates:
-1. Device detection (CUDA / CPU).
+1. Device detection (CUDA / Apple MPS / CPU).
 2. SEN2SR-Lite model initialization and pretrained checkpoint loading.
 3. 10-band Sentinel-2 forward pass.
 4. Verification of 4x spatial upscaling.
@@ -25,6 +25,7 @@ import torch
 try:
     from ntro_srm.models.sen2sr import SEN2SRModel
     from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
+    from ntro_srm.utils.device import mps_available, select_device, synchronize_device
 except ImportError as err:
     print(f"[FAIL] Could not import ntro_srm modules: {err}")
     sys.exit(1)
@@ -37,9 +38,11 @@ def main() -> int:
 
     # 1. Device check
     cuda_available = torch.cuda.is_available()
-    device = torch.device("cuda" if cuda_available else "cpu")
+    apple_mps_available = mps_available()
+    device = select_device()
     print(f"PyTorch Version:  {torch.__version__}")
     print(f"CUDA Available:   {cuda_available}")
+    print(f"MPS Available:    {apple_mps_available}")
     if cuda_available:
         print(f"CUDA Device:      {torch.cuda.get_device_name(0)}")
     print(f"Target Device:    {device}")
@@ -81,8 +84,7 @@ def main() -> int:
 
     # 4. Run prediction
     print("Running forward pass (predict)...")
-    if cuda_available:
-        torch.cuda.synchronize()
+    synchronize_device(device)
     start_infer = time.perf_counter()
 
     try:
@@ -91,8 +93,7 @@ def main() -> int:
         print(f"[FAIL] Inference execution failed: {err}")
         return 1
 
-    if cuda_available:
-        torch.cuda.synchronize()
+    synchronize_device(device)
     infer_time = time.perf_counter() - start_infer
 
     # 5. Report results

@@ -25,6 +25,10 @@ class TestWebAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert "cuda_available" in data
+        assert "mps_available" in data
+        assert "accelerator_available" in data
+        assert "accelerator_active" in data
+        assert data["device_type"] == "cpu"
         assert "device_name" in data
         assert data["model_variant"] == "SEN2SR-Lite"
         assert "models_available" in data
@@ -170,4 +174,3 @@ class TestWebAPI:
         res = provider.search(search_req)
         assert res.total >= 1
         assert res.scenes[0].provider == "Copernicus Data Space (CDSE)"
-

@@ -136,6 +136,8 @@ class TestHealthEndpoint:
         assert data["status"] == "ok"
         assert data["device"] == "cpu"
         assert isinstance(data["cuda_available"], bool)
+        assert isinstance(data["mps_available"], bool)
+        assert data["accelerator_active"] is False
         assert data["version"]
 
 

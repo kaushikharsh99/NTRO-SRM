@@ -36,6 +36,7 @@ from ntro_srm.preprocessing.transforms import (
     handle_nans,
     normalize_reflectance,
 )
+from ntro_srm.utils.device import select_device
 
 # Hugging Face STAC metadata URLs for pretrained weights
 DEFAULT_HF_SEN2SRLITE_URL = (
@@ -54,9 +55,10 @@ class SEN2SRModel(nn.Module):
 
     Supported Variants:
         - "lite": Fast CNN-based Swift Parameter-free Attention Network (SPAN),
-          suitable for CPU and CUDA GPU execution (~0.47M parameters).
+          suitable for CPU, CUDA, and Apple MPS execution (~0.47M parameters).
         - "swin2sr": Vision Transformer + MambaSR high-capacity architecture
-          (~12.9M parameters), running with chunked selective scan on CUDA.
+          (~12.9M parameters), running with chunked selective scan on CUDA,
+          Apple MPS, or CPU.
 
     Expected Input Specification:
         - Shape: (B, 10, H, W) or (10, H, W)
@@ -91,7 +93,8 @@ class SEN2SRModel(nn.Module):
         model_variant : str, default="lite"
             Model architecture variant ("lite" or "swin2sr" / "swin").
         device : str or torch.device, optional
-            Computation device ("cuda" or "cpu"). If None, uses CUDA if available.
+            Computation device ("cuda", "mps", or "cpu"). If omitted, selects
+            CUDA, then Apple MPS, then CPU.
         checkpoint_dir : str or Path, optional
             Path to directory containing downloaded checkpoint safetensors and mlm.json.
             If None, defaults to `checkpoints/SEN2SRLite` or `checkpoints/SEN2SR`.
@@ -117,11 +120,7 @@ class SEN2SRModel(nn.Module):
                 f"Supported variants: 'lite' (SEN2SR-Lite), 'swin2sr' (SEN2SR-Swin2SR)."
             )
 
-        # Determine compute device
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
+        self.device = select_device(device)
 
         # Resolve checkpoint path
         if checkpoint_dir is None:
@@ -135,7 +134,20 @@ class SEN2SRModel(nn.Module):
         self.model = self._load_model(auto_download=auto_download)
         self._materialize_inference_tensors(preserve_parameters=False)
         self.model.to(self.device)
+        self._move_upstream_runtime_tensors()
         self.set_trainable(trainable)
+
+    def _move_upstream_runtime_tensors(self) -> None:
+        """Move SEN2SR tensor attributes that upstream did not register as buffers.
+
+        SEN2SR's Fourier hard constraint stores each low-pass mask as a plain
+        attribute. ``Module.to`` therefore leaves those masks on CPU, which causes
+        a device mismatch during MPS inference.
+        """
+        for module in self.model.modules():
+            low_pass_mask = getattr(module, "low_pass_mask", None)
+            if isinstance(low_pass_mask, torch.Tensor):
+                module.low_pass_mask = low_pass_mask.to(self.device)
 
     def _materialize_inference_tensors(self, *, preserve_parameters: bool) -> None:
         """Copy MLSTAC inference tensors into ordinary autograd tensors."""
@@ -190,6 +202,8 @@ class SEN2SRModel(nn.Module):
                     f"Checkpoint not found at {self.checkpoint_dir} and auto_download=False."
                 )
 
+        # MLSTAC currently accepts CPU/CUDA at construction time. MPS models are
+        # materialized on CPU first, then moved to Metal by this adapter.
         device_str = "cuda" if self.device.type == "cuda" else "cpu"
         stac_item = mlstac.load(str(self.checkpoint_dir))
         return stac_item.compiled_model(device=device_str)

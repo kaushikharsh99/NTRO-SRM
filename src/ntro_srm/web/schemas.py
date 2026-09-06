@@ -160,6 +160,10 @@ class SystemInfoResponse(BaseModel):
     """Host computing environment and model availability."""
 
     cuda_available: bool
+    mps_available: bool = False
+    accelerator_available: bool = False
+    accelerator_active: bool = False
+    device_type: str = "cpu"
     device_name: str
     vram_total_gb: Optional[float] = None
     vram_free_gb: Optional[float] = None
@@ -252,6 +256,9 @@ class HealthResponse(BaseModel):
     version: str
     device: str
     cuda_available: bool
+    mps_available: bool = False
+    accelerator_available: bool = False
+    accelerator_active: bool = False
     checkpoints_ready: bool
     catalog_provider: str
     active_jobs: int = 0

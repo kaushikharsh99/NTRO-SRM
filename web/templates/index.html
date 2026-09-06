@@ -33,7 +33,7 @@
             <div class="header-center">
                 <!-- Hardware & Pipeline Status Chips -->
                 <div class="status-chip">
-                    <span class="status-indicator {% if sys_info.cuda_available %}indicator-active{% else %}indicator-warn{% endif %}"></span>
+                    <span class="status-indicator {% if sys_info.accelerator_active %}indicator-active{% else %}indicator-warn{% endif %}"></span>
                     <span class="chip-val">{{ sys_info.device_name }}</span>
                 </div>
 

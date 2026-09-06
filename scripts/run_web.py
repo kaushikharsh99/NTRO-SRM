@@ -18,10 +18,10 @@ src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-import torch
 import uvicorn
 
 from ntro_srm.web.app import create_app
+from ntro_srm.utils.device import device_name, select_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,7 +45,8 @@ def parse_args() -> argparse.Namespace:
         "--device",
         type=str,
         default=None,
-        help="Compute device ('cuda' or 'cpu'). Default auto-detects CUDA.",
+        choices=["cuda", "mps", "cpu"],
+        help="Compute device. Default selects CUDA, Apple MPS, then CPU.",
     )
     parser.add_argument(
         "--reload",
@@ -66,9 +67,8 @@ def main() -> None:
         pass
 
     # Detect hardware
-    cuda_avail = torch.cuda.is_available()
-    gpu_name = torch.cuda.get_device_name(0) if cuda_avail else "CPU (Fallback)"
-    active_device = args.device if args.device else ("cuda" if cuda_avail else "cpu")
+    active_device = select_device(args.device)
+    gpu_name = device_name(active_device)
 
     import os
     cdse_id = os.environ.get("CDSE_CLIENT_ID") or os.environ.get("COPERNICUS_CLIENT_ID")
@@ -78,14 +78,16 @@ def main() -> None:
     print("NTRO-SRM Web Interface")
     print("=" * 48)
     print(f"Model:      SEN2SR-Lite")
-    print(f"Device:     {active_device.upper()}")
+    print(f"Device:     {str(active_device).upper()}")
     print(f"GPU:        {gpu_name}")
+    if active_device.type == "mps":
+        print("Backend:    Apple Metal Performance Shaders")
     print(f"Copernicus: {cdse_status}")
     print(f"\nServer:")
     print(f"http://{args.host}:{args.port}")
     print("=" * 48 + "\n")
 
-    app = create_app(workspace_root=project_root, device=active_device)
+    app = create_app(workspace_root=project_root, device=str(active_device))
 
     uvicorn.run(
         app,
