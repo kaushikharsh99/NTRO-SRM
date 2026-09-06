@@ -17,11 +17,11 @@
         aoiStartLatLng: null,
         currentAoi: null, // { min_lon, min_lat, max_lon, max_lat }
         selectedScene: null,
-        selectedModel: "lite", // "lite" | "swin2sr"
+        selectedModel: "lite", // "lite" | "lite-ft" | "swin2sr"
         activeJobId: null,
         jobPollTimer: null,
         colorMode: "rgb", // "rgb" | "cir"
-        leftCompareMode: "lr", // "lr" | "bicubic"
+        leftCompareMode: "lr", // "lr" | "bicubic" | "prev"
         viewMode: "split", // "split" | "lr_only" | "sr_only" | "blend"
         srOpacity: 100, // 0 to 100
         sliderPosRatio: 0.5, // 0.0 to 1.0
@@ -31,6 +31,13 @@
             right: null,
         },
         jobResult: null,
+        prevJobResult: null, // last completed run kept for cross-model compare
+        compareRunning: false,
+        diffShown: false,
+        diffAmp: 0,
+        analysisLayer: "rgb", // "rgb" | "confidence" | "novelty" | "ndvi"
+        pixelMarker: null,
+        pixelProbeRequest: 0,
         uploadedFile: null,
         userLocationMarker: null,
         userLocationCircle: null,
@@ -52,6 +59,7 @@
             btnClearAoi: document.getElementById("btn-clear-aoi"),
             btnSearchScenes: document.getElementById("btn-search-scenes"),
             btnRunSr: document.getElementById("btn-run-sr"),
+            btnCompareModels: document.getElementById("btn-compare-models"),
             btnModeRgb: document.getElementById("btn-mode-rgb"),
             btnModeCir: document.getElementById("btn-mode-cir"),
             selectLeftLayer: document.getElementById("select-left-layer"),
@@ -65,6 +73,7 @@
             srOpacitySlider: document.getElementById("sr-opacity-slider"),
             srOpacityVal: document.getElementById("sr-opacity-val"),
             btnZoomPatch: document.getElementById("btn-zoom-patch"),
+            btnToggleDiff: document.getElementById("btn-toggle-diff"),
             btnLocateMe: document.getElementById("btn-locate-me"),
             dateFrom: document.getElementById("date-from"),
             dateTo: document.getElementById("date-to"),
@@ -98,11 +107,30 @@
             btnDownloadGeotiff: document.getElementById("btn-download-geotiff"),
             btnDownloadRgb: document.getElementById("btn-download-rgb"),
             btnDownloadCir: document.getElementById("btn-download-cir"),
+            btnDownloadReport: document.getElementById("btn-download-report"),
+            btnDownloadReportMd: document.getElementById("btn-download-report-md"),
             sliderContainer: document.getElementById("slider-container"),
             sliderDivider: document.getElementById("slider-divider"),
             compareLabels: document.getElementById("compare-labels"),
             labelLeftText: document.getElementById("label-left-text"),
             labelRightText: document.getElementById("label-right-text"),
+            validationDock: document.getElementById("validation-dock"),
+            validationVerdict: document.getElementById("validation-verdict"),
+            validationScope: document.getElementById("validation-scope"),
+            validationMetrics: document.getElementById("validation-metrics"),
+            comparisonSummary: document.getElementById("comparison-summary"),
+            analysisLayerSwitcher: document.getElementById("analysis-layer-switcher"),
+            btnOpenReport: document.getElementById("btn-open-report"),
+            validationModal: document.getElementById("validation-modal"),
+            btnCloseReport: document.getElementById("btn-close-report"),
+            validationModalSubtitle: document.getElementById("validation-modal-subtitle"),
+            validationReportContent: document.getElementById("validation-report-content"),
+            pixelInspector: document.getElementById("pixel-inspector"),
+            btnClosePixel: document.getElementById("btn-close-pixel"),
+            btnInspectCenter: document.getElementById("btn-inspect-center"),
+            pixelCoordinate: document.getElementById("pixel-coordinate"),
+            pixelSummary: document.getElementById("pixel-summary"),
+            pixelSpectrum: document.getElementById("pixel-spectrum"),
 
             // Tabs
             tabBtns: document.querySelectorAll(".tab-btn"),
@@ -577,7 +605,7 @@
         }
 
         // Enable 1-Click Upscale immediately
-        elements.btnRunSr.disabled = false;
+        setRunButtonsDisabled(false);
     }
 
     function updateAoiMetrics(bounds) {
@@ -612,10 +640,10 @@
         if (totalPx > maxPx) {
             elements.aoiWarning.textContent = `This area contains about ${totalPx.toLocaleString()} pixels. Draw a smaller region.`;
             elements.aoiWarning.classList.remove("hidden");
-            elements.btnRunSr.disabled = true;
+            setRunButtonsDisabled(true);
         } else {
             elements.aoiWarning.classList.add("hidden");
-            elements.btnRunSr.disabled = false;
+            setRunButtonsDisabled(false);
         }
 
         elements.aoiDisplayStatus.textContent = `${wPx}×${hPx} px at 10 m → ${wSr}×${hSr} px at 2.5 m`;
@@ -639,7 +667,7 @@
                 elements.aoiPixels.textContent = "--";
                 if (elements.aoiSrPixels) elements.aoiSrPixels.textContent = "--";
                 elements.aoiWarning.classList.add("hidden");
-                elements.btnRunSr.disabled = true;
+                setRunButtonsDisabled(true);
                 elements.selectedSceneCard.classList.add("hidden");
                 elements.aoiDisplayStatus.textContent = "Draw an area or choose a location";
             });
@@ -727,6 +755,8 @@
                 elements.btnRunUploadSr.disabled = true;
                 elements.progressCard.classList.remove("hidden");
                 elements.resultsCard.classList.add("hidden");
+                if (elements.validationDock) elements.validationDock.classList.add("hidden");
+                closePixelInspector();
                 clearOverlays();
                 resetProgressSteps();
                 updateProgressUI(10, "Uploading GeoTIFF to backend server...");
@@ -735,7 +765,13 @@
                 formData.append("file", state.uploadedFile);
 
                 try {
-                    const resp = await fetch(`/api/sr/upload?model=${encodeURIComponent(state.selectedModel)}`, {
+                    const uploadQuery = new URLSearchParams({
+                        model: state.selectedModel,
+                        run_analysis: "true",
+                        run_wald_validation: "true",
+                        uncertainty_members: "0",
+                    });
+                    const resp = await fetch(`/api/sr/upload?${uploadQuery.toString()}`, {
                         method: "POST",
                         body: formData,
                     });
@@ -874,7 +910,7 @@
         elements.selectedSceneCard.classList.remove("hidden");
 
         if (state.currentAoi && elements.aoiWarning.classList.contains("hidden")) {
-            elements.btnRunSr.disabled = false;
+            setRunButtonsDisabled(false);
         }
     }
 
@@ -936,9 +972,11 @@
     }
 
     async function launchSrProcessing(isDemo = false) {
-        elements.btnRunSr.disabled = true;
+        setRunButtonsDisabled(true);
         elements.progressCard.classList.remove("hidden");
         elements.resultsCard.classList.add("hidden");
+        if (elements.validationDock) elements.validationDock.classList.add("hidden");
+        closePixelInspector();
         clearOverlays();
 
         resetProgressSteps();
@@ -953,6 +991,9 @@
             model: state.selectedModel,
             overlap: 32,
             clamp_output: true,
+            run_analysis: true,
+            run_wald_validation: true,
+            uncertainty_members: 0,
         };
 
         try {
@@ -972,11 +1013,110 @@
             pollJobStatus(state.activeJobId);
         } catch (err) {
             updateProgressUI(100, `Error: ${err.message}`);
-            elements.btnRunSr.disabled = false;
+            setRunButtonsDisabled(false);
         }
     }
 
-    function pollJobStatus(jobId) {
+    // =========================================================================
+    // 8b. One-Click Compare: Lite vs Lite-FT on the same AOI, then auto-swipe
+    // =========================================================================
+    function runSrJobOnce(payload, phaseLabel) {
+        return new Promise((resolve, reject) => {
+            fetch("/api/sr/process", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            }).then(async (resp) => {
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                    throw new Error(err.detail || "Failed to start super-resolution job.");
+                }
+                const data = await resp.json();
+                state.activeJobId = data.job_id;
+                updateProgressUI(10, `${phaseLabel}: processing…`);
+                pollJobStatus(data.job_id, (job, err) => {
+                    if (err || !job) {
+                        reject(err || new Error("Job failed."));
+                    } else {
+                        resolve(job);
+                    }
+                });
+            }).catch(reject);
+        });
+    }
+
+    async function compareLiteVsFt() {
+        if (!state.map || state.compareRunning) return;
+        if (!state.currentAoi || (elements.btnRunSr && elements.btnRunSr.disabled)) {
+            alert("Please define an Area of Interest (AOI) on the map first.");
+            return;
+        }
+        state.compareRunning = true;
+        setRunButtonsDisabled(true);
+        elements.progressCard.classList.remove("hidden");
+        elements.resultsCard.classList.add("hidden");
+        if (elements.validationDock) elements.validationDock.classList.add("hidden");
+        closePixelInspector();
+        clearOverlays();
+        resetProgressSteps();
+
+        const sceneId = state.selectedScene ? state.selectedScene.id : "auto";
+        const useDemoScene = sceneId === "DEMO_MLBS_20180825_S2L2A";
+        const variants = ["lite", "lite-ft"];
+        const done = {};
+        try {
+            for (let i = 0; i < variants.length; i++) {
+                const variant = variants[i];
+                updateProgressUI(5, `Compare ${i + 1}/2: launching ${displayNameForModel(variant)}…`);
+                const job = await runSrJobOnce({
+                    aoi: state.currentAoi,
+                    scene_id: useDemoScene ? null : sceneId,
+                    is_demo: useDemoScene,
+                    model: variant,
+                    overlap: 32,
+                    clamp_output: true,
+                    run_analysis: true,
+                    run_wald_validation: true,
+                    uncertainty_members: 0,
+                }, `Compare ${i + 1}/2 ${displayNameForModel(variant)}`);
+                done[variant] = job;
+            }
+        } catch (err) {
+            updateProgressUI(100, `Compare failed: ${err.message}`);
+            state.compareRunning = false;
+            setRunButtonsDisabled(false);
+            return;
+        }
+
+        // Present FT on the right, Lite on the left, swipe ready.
+        onJobCompleted({ job_id: done["lite-ft"].job_id, result: done["lite-ft"].result });
+        state.prevJobResult = done["lite"].result;
+        state.leftCompareMode = "prev";
+        if (elements.selectLeftLayer) elements.selectLeftLayer.value = "prev";
+        refreshPrevRunOption();
+        if (state.layers.left) {
+            state.layers.left.setUrl(getLayerUrl("prev", state.colorMode));
+        }
+        updateLabelTexts();
+        renderValidationDock();
+        state.compareRunning = false;
+        setRunButtonsDisabled(false);
+    }
+
+    function initCompare() {
+        if (elements.btnCompareModels) {
+            elements.btnCompareModels.addEventListener("click", () => {
+                compareLiteVsFt();
+            });
+        }
+    }
+
+    function setRunButtonsDisabled(disabled) {
+        if (elements.btnRunSr) elements.btnRunSr.disabled = disabled;
+        if (elements.btnCompareModels) elements.btnCompareModels.disabled = disabled;
+    }
+
+    function pollJobStatus(jobId, onDone) {
         if (state.jobPollTimer) clearInterval(state.jobPollTimer);
 
         state.jobPollTimer = setInterval(async () => {
@@ -989,12 +1129,20 @@
 
                 if (job.status === "completed") {
                     clearInterval(state.jobPollTimer);
-                    onJobCompleted(job);
+                    if (onDone) {
+                        onDone(job);
+                    } else {
+                        onJobCompleted(job);
+                    }
                 } else if (job.status === "failed") {
                     clearInterval(state.jobPollTimer);
-                    updateProgressUI(100, `Failed: ${job.error_message || "Unknown error"}`);
-                    elements.btnRunSr.disabled = false;
+                    const errMsg = job.error_message || "Unknown error";
+                    updateProgressUI(100, `Failed: ${errMsg}`);
+                    setRunButtonsDisabled(false);
                     if (elements.btnRunUploadSr) elements.btnRunUploadSr.disabled = false;
+                    if (onDone) {
+                        onDone(null, new Error(errMsg));
+                    }
                 }
             } catch (e) {
                 console.error("Polling error:", e);
@@ -1028,12 +1176,294 @@
         }
     }
 
+    const QUALITY_METRICS = [
+        { key: "psnr_db", label: "PSNR", unit: "dB", digits: 2, better: "higher", help: "Signal fidelity against the observed 10 m reference. Higher is better." },
+        { key: "ssim", label: "SSIM", unit: "", digits: 3, better: "higher", help: "Structural similarity to the observed reference. 1.0 is a perfect match." },
+        { key: "sam_deg", label: "SAM", unit: "°", digits: 2, better: "lower", help: "Spectral angle between reconstructed and observed pixels. Lower is better." },
+        { key: "ergas", label: "ERGAS", unit: "%", digits: 2, better: "lower", help: "Relative global reconstruction error. Lower is better." },
+    ];
+
+    function escapeHtml(value) {
+        return String(value == null ? "" : value)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+    }
+
+    function finiteNumber(value) {
+        if (value === null || value === undefined || value === "") return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    function formatMetric(value, spec) {
+        const n = finiteNumber(value);
+        if (n === null) return "—";
+        return `${n.toFixed(spec.digits)}${spec.unit ? ` ${spec.unit}` : ""}`;
+    }
+
+    function qualityBlock(result) {
+        const analysis = (result && result.analysis) || {};
+        const wald = analysis.wald || null;
+        const consistency = analysis.consistency || null;
+        return {
+            analysis,
+            metrics: (wald && wald.metrics) || (consistency && consistency.metrics) || {},
+            scope: wald ? "Wald · 40 m → 10 m" : "Source consistency · 10 m",
+            isWald: !!wald,
+        };
+    }
+
+    function comparisonFor(current, previous) {
+        if (!current || !previous || !sameBounds(current.leaflet_bounds, previous.leaflet_bounds)) return null;
+        const currentQuality = qualityBlock(current);
+        const previousQuality = qualityBlock(previous);
+        if (currentQuality.isWald !== previousQuality.isWald) return null;
+        if (!Object.keys(currentQuality.metrics).length || !Object.keys(previousQuality.metrics).length) return null;
+
+        let currentWins = 0;
+        let previousWins = 0;
+        const metrics = QUALITY_METRICS.map((spec) => {
+            const currentValue = finiteNumber(currentQuality.metrics[spec.key]);
+            const previousValue = finiteNumber(previousQuality.metrics[spec.key]);
+            if (currentValue === null || previousValue === null) return { spec, currentValue, previousValue, winner: "none" };
+            const delta = currentValue - previousValue;
+            const threshold = Math.max(Math.abs(currentValue), Math.abs(previousValue), 1) * 1e-5;
+            let winner = "tie";
+            if (Math.abs(delta) > threshold) {
+                const currentBetter = spec.better === "higher" ? delta > 0 : delta < 0;
+                winner = currentBetter ? "current" : "previous";
+                if (currentBetter) currentWins += 1;
+                else previousWins += 1;
+            }
+            return { spec, currentValue, previousValue, delta, winner };
+        });
+        return { metrics, currentWins, previousWins, currentQuality, previousQuality };
+    }
+
+    function verdictText(summary, hasWald) {
+        const raw = String((summary && summary.verdict) || "").toLowerCase();
+        if (raw.includes("validated")) return raw.includes("caveat") ? "Validated · caveats" : "Validated";
+        if (hasWald) return "Validation complete";
+        return "Consistency checked";
+    }
+
+    function renderValidationDock() {
+        if (!state.jobResult || !elements.validationDock) return;
+        const current = qualityBlock(state.jobResult);
+        const summary = current.analysis.summary || {};
+        const uncertainty = current.analysis.uncertainty || {};
+        const comparison = comparisonFor(state.jobResult, state.prevJobResult);
+
+        elements.validationVerdict.textContent = verdictText(summary, current.isWald);
+        elements.validationVerdict.className = `validation-verdict ${current.isWald ? "is-validated" : "is-limited"}`;
+        elements.validationScope.textContent = current.scope;
+
+        const reliability = finiteNumber(uncertainty.reliability_score);
+        const cards = QUALITY_METRICS.map((spec) => {
+            const value = current.metrics[spec.key];
+            const compared = comparison && comparison.metrics.find((item) => item.spec.key === spec.key);
+            let deltaHtml = "";
+            if (compared && finiteNumber(compared.delta) !== null) {
+                const sign = compared.delta > 0 ? "+" : "";
+                const deltaText = `${sign}${compared.delta.toFixed(spec.digits)}`;
+                const deltaClass = compared.winner === "current" ? "is-better" : (compared.winner === "previous" ? "is-worse" : "is-even");
+                deltaHtml = `<span class="metric-delta ${deltaClass}">Δ ${deltaText}</span>`;
+            }
+            return `<div class="validation-metric" title="${escapeHtml(spec.help)}">
+                <div class="metric-label">${spec.label}</div>
+                <div class="metric-value">${formatMetric(value, spec)}</div>${deltaHtml}
+            </div>`;
+        });
+        cards.push(`<div class="validation-metric" title="Scene-level confidence derived from reconstruction novelty.">
+            <div class="metric-label">Reliability</div>
+            <div class="metric-value">${reliability === null ? "—" : `${reliability.toFixed(1)}%`}</div>
+            <span class="metric-delta risk-${escapeHtml(uncertainty.hallucination_risk || "unknown")}">${escapeHtml(uncertainty.hallucination_risk || "unrated")} risk</span>
+        </div>`);
+        elements.validationMetrics.innerHTML = cards.join("");
+
+        if (comparison) {
+            const currentName = state.jobResult.model || "Current run";
+            const previousName = state.prevJobResult.model || "Previous run";
+            let leadText = "The runs are tied across the headline metrics.";
+            if (comparison.currentWins > comparison.previousWins) {
+                leadText = `${currentName} leads ${comparison.currentWins} of ${QUALITY_METRICS.length} metrics.`;
+            } else if (comparison.previousWins > comparison.currentWins) {
+                leadText = `${previousName} leads ${comparison.previousWins} of ${QUALITY_METRICS.length} metrics.`;
+            }
+            elements.comparisonSummary.innerHTML = `<span class="comparison-icon">↗</span><span><b>${escapeHtml(leadText)}</b> Deltas compare the right-side run with the left.</span>`;
+            elements.comparisonSummary.classList.remove("hidden");
+        } else {
+            elements.comparisonSummary.classList.add("hidden");
+            elements.comparisonSummary.innerHTML = "";
+        }
+
+        elements.validationDock.classList.remove("hidden");
+        renderValidationReport();
+    }
+
+    function metricTableRows(metrics, previousMetrics) {
+        return QUALITY_METRICS.map((spec) => {
+            const currentValue = finiteNumber(metrics && metrics[spec.key]);
+            const previousValue = finiteNumber(previousMetrics && previousMetrics[spec.key]);
+            const delta = currentValue !== null && previousValue !== null ? currentValue - previousValue : null;
+            const better = delta === null ? "" : ((spec.better === "higher" ? delta > 0 : delta < 0) ? "is-better" : "is-worse");
+            return `<tr><th>${spec.label}<small>${escapeHtml(spec.help)}</small></th>
+                ${previousMetrics ? `<td>${formatMetric(previousValue, spec)}</td>` : ""}
+                <td><b>${formatMetric(currentValue, spec)}</b></td>
+                ${previousMetrics ? `<td class="${better}">${delta === null ? "—" : `${delta > 0 ? "+" : ""}${delta.toFixed(spec.digits)}`}</td>` : ""}
+            </tr>`;
+        }).join("");
+    }
+
+    function renderValidationReport() {
+        if (!state.jobResult || !elements.validationReportContent) return;
+        const current = qualityBlock(state.jobResult);
+        const previous = comparisonFor(state.jobResult, state.prevJobResult);
+        const consistency = current.analysis.consistency || {};
+        const uncertainty = current.analysis.uncertainty || {};
+        const caveats = (current.analysis.summary && current.analysis.summary.caveats) || [];
+        const perBand = (current.metrics && current.metrics.per_band) || [];
+        const currentName = state.jobResult.model || "Current run";
+        const previousName = state.prevJobResult && (state.prevJobResult.model || "Previous run");
+        const previousMetrics = previous ? previous.previousQuality.metrics : null;
+
+        elements.validationModalSubtitle.textContent = current.isWald
+            ? "Quantitative Wald validation at 40 m → 10 m, plus 2.5 m source-consistency checks"
+            : "2.5 m product checked by downsampling it to the observed 10 m source";
+
+        const bandRows = perBand.map((band) => `<tr><th>${escapeHtml(band.band)}</th><td>${finiteNumber(band.psnr_db) === null ? "—" : band.psnr_db.toFixed(2)}</td><td>${finiteNumber(band.ssim) === null ? "—" : band.ssim.toFixed(3)}</td><td>${finiteNumber(band.rmse) === null ? "—" : band.rmse.toFixed(4)}</td><td>${finiteNumber(band.cc) === null ? "—" : band.cc.toFixed(3)}</td></tr>`).join("");
+        const consistencyMetrics = consistency.metrics || {};
+        const reliability = finiteNumber(uncertainty.reliability_score);
+        const lowConfidence = finiteNumber(uncertainty.low_confidence_fraction);
+
+        elements.validationReportContent.innerHTML = `
+            <section class="report-callout">
+                <div><span>Result</span><b>${escapeHtml(verdictText(current.analysis.summary, current.isWald))}</b></div>
+                <div><span>Validation scope</span><b>${escapeHtml(current.scope)}</b></div>
+                <div><span>Sampling density</span><b>10,000 → 160,000 px/km²</b></div>
+            </section>
+            <p class="report-method-note">${current.isWald
+                ? "Accuracy metrics are measured by degrading the observed 10 m image to 40 m, reconstructing it to 10 m, and comparing against the real 10 m image. They indicate model accuracy without claiming unavailable 2.5 m ground truth."
+                : "No direct high-resolution reference was available. The report therefore measures how faithfully the 2.5 m reconstruction returns to the observed 10 m source."}</p>
+            <section class="report-section">
+                <div class="report-section-title"><h3>${previous ? "Run benchmark" : "Headline metrics"}</h3><span>${escapeHtml(current.scope)}</span></div>
+                <div class="report-table-wrap"><table class="report-table"><thead><tr><th>Metric</th>${previous ? `<th>${escapeHtml(previousName)}</th>` : ""}<th>${escapeHtml(currentName)}</th>${previous ? "<th>Δ</th>" : ""}</tr></thead><tbody>${metricTableRows(current.metrics, previousMetrics)}</tbody></table></div>
+            </section>
+            <section class="report-grid">
+                <div class="report-stat"><span>Reliability</span><b>${reliability === null ? "—" : `${reliability.toFixed(1)}%`}</b><small>${escapeHtml(uncertainty.hallucination_risk || "unrated")} hallucination risk</small></div>
+                <div class="report-stat"><span>Low-confidence pixels</span><b>${lowConfidence === null ? "—" : `${(lowConfidence * 100).toFixed(1)}%`}</b><small>confidence below 0.5</small></div>
+                <div class="report-stat"><span>10 m consistency</span><b>${consistency.passed ? "Pass" : "Review"}</b><small>SAM ${finiteNumber(consistencyMetrics.sam_deg) === null ? "—" : `${consistencyMetrics.sam_deg.toFixed(2)}°`}</small></div>
+            </section>
+            ${bandRows ? `<section class="report-section"><div class="report-section-title"><h3>Per-band validation</h3><span>10 Sentinel-2 bands</span></div><div class="report-table-wrap"><table class="report-table compact"><thead><tr><th>Band</th><th>PSNR</th><th>SSIM</th><th>RMSE</th><th>Corr.</th></tr></thead><tbody>${bandRows}</tbody></table></div></section>` : ""}
+            ${caveats.length ? `<section class="report-section caveat-section"><h3>Interpretation limits</h3><ul>${caveats.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>` : ""}`;
+    }
+
+    function setAnalysisLayer(layer) {
+        if (!state.jobResult || !state.layers.right) return;
+        state.diffShown = false;
+        if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        state.analysisLayer = layer;
+        const jobId = state.jobResult.job_id || state.activeJobId;
+        let url;
+        if (layer === "rgb") url = getLayerUrl("sr", state.colorMode);
+        else url = `/api/sr/jobs/${encodeURIComponent(jobId)}/preview/sr_${encodeURIComponent(layer)}`;
+        state.layers.right.setUrl(url);
+        elements.analysisLayerSwitcher.querySelectorAll(".analysis-layer-btn").forEach((button) => {
+            button.classList.toggle("active", button.dataset.layer === layer);
+        });
+        if (layer !== "rgb" && state.viewMode === "lr_only") setViewMode("split");
+        updateLabelTexts();
+    }
+
+    function closePixelInspector() {
+        if (elements.pixelInspector) elements.pixelInspector.classList.add("hidden");
+        if (state.pixelMarker && state.map) state.map.removeLayer(state.pixelMarker);
+        state.pixelMarker = null;
+    }
+
+    async function inspectPixel(latlng) {
+        if (!state.jobResult || state.isDrawingAoi) return;
+        const bounds = L.latLngBounds(state.jobResult.leaflet_bounds);
+        if (!bounds.contains(latlng)) return;
+        const requestId = ++state.pixelProbeRequest;
+        if (state.pixelMarker) state.map.removeLayer(state.pixelMarker);
+        state.pixelMarker = L.circleMarker(latlng, { radius: 6, color: "#fff", weight: 2, fillColor: "#007aff", fillOpacity: 1 }).addTo(state.map);
+        elements.pixelInspector.classList.remove("hidden");
+        elements.pixelCoordinate.textContent = `${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
+        elements.pixelSummary.innerHTML = '<span class="pixel-loading">Sampling 10 bands…</span>';
+        elements.pixelSpectrum.innerHTML = "";
+        try {
+            const jobId = state.jobResult.job_id || state.activeJobId;
+            const params = new URLSearchParams({ lat: latlng.lat, lon: latlng.lng });
+            const response = await fetch(`/api/sr/jobs/${encodeURIComponent(jobId)}/pixel?${params}`);
+            if (!response.ok) throw new Error("Pixel could not be sampled");
+            const data = await response.json();
+            if (requestId !== state.pixelProbeRequest) return;
+            const uncertainty = data.uncertainty || {};
+            const confidence = finiteNumber(uncertainty.confidence);
+            const indices = Object.fromEntries((data.indices || []).map((item) => [String(item.key).toLowerCase(), item]));
+            const indexCards = ["ndvi", "ndwi"].filter((key) => indices[key]).map((key) => {
+                const item = indices[key];
+                return `<div><span>${key.toUpperCase()}</span><b>${finiteNumber(item.sr) === null ? "—" : item.sr.toFixed(3)}</b><small>${escapeHtml(item.class_label || "")}</small></div>`;
+            }).join("");
+            elements.pixelSummary.innerHTML = `<div class="pixel-confidence"><span>Confidence</span><b>${confidence === null ? "—" : `${(confidence * 100).toFixed(0)}%`}</b><small>${escapeHtml(uncertainty.risk || "unrated")} risk</small></div>${indexCards}`;
+
+            const lr = (data.lr && data.lr.reflectance) || [];
+            const sr = (data.sr && data.sr.reflectance) || [];
+            const maxValue = Math.max(0.01, ...lr.map(Number), ...sr.map(Number));
+            elements.pixelSpectrum.innerHTML = (data.band_names || []).map((band, index) => {
+                const lrValue = finiteNumber(lr[index]) || 0;
+                const srValue = finiteNumber(sr[index]) || 0;
+                return `<div class="spectrum-row" title="${escapeHtml(band)} · observed ${lrValue.toFixed(4)} · reconstructed ${srValue.toFixed(4)}">
+                    <span>${escapeHtml(band)}</span><div class="spectrum-bars"><i class="bar-observed" style="width:${Math.max(1, lrValue / maxValue * 100)}%"></i><i class="bar-reconstructed" style="width:${Math.max(1, srValue / maxValue * 100)}%"></i></div><b>${srValue.toFixed(3)}</b>
+                </div>`;
+            }).join("") + '<div class="spectrum-legend"><span><i class="observed"></i>Observed 10 m</span><span><i class="reconstructed"></i>Result 2.5 m</span></div>';
+        } catch (error) {
+            if (requestId === state.pixelProbeRequest) elements.pixelSummary.textContent = error.message;
+        }
+    }
+
+    function initValidationUi() {
+        if (elements.btnOpenReport) elements.btnOpenReport.addEventListener("click", () => elements.validationModal.classList.remove("hidden"));
+        if (elements.btnCloseReport) elements.btnCloseReport.addEventListener("click", () => elements.validationModal.classList.add("hidden"));
+        if (elements.validationModal) elements.validationModal.addEventListener("click", (event) => {
+            if (event.target.dataset.closeReport) elements.validationModal.classList.add("hidden");
+        });
+        document.addEventListener("keydown", (event) => {
+            if (event.key === "Escape") elements.validationModal.classList.add("hidden");
+        });
+        if (elements.analysisLayerSwitcher) elements.analysisLayerSwitcher.addEventListener("click", (event) => {
+            const button = event.target.closest(".analysis-layer-btn");
+            if (button) setAnalysisLayer(button.dataset.layer);
+        });
+        if (elements.btnClosePixel) elements.btnClosePixel.addEventListener("click", closePixelInspector);
+        if (elements.btnInspectCenter) elements.btnInspectCenter.addEventListener("click", () => {
+            if (state.jobResult && state.jobResult.leaflet_bounds) {
+                inspectPixel(L.latLngBounds(state.jobResult.leaflet_bounds).getCenter());
+            }
+        });
+    }
+
     // =========================================================================
     // 9. Visual Overlay Rendering & Results Display
     // =========================================================================
     function onJobCompleted(job) {
+        if (state.jobResult && state.jobResult !== job.result) {
+            state.prevJobResult = state.jobResult;
+        }
         state.jobResult = job.result;
-        elements.btnRunSr.disabled = false;
+        state.jobResult.job_id = state.jobResult.job_id || job.job_id;
+        state.analysisLayer = "rgb";
+        if (elements.analysisLayerSwitcher) {
+            elements.analysisLayerSwitcher.querySelectorAll(".analysis-layer-btn").forEach((button) => {
+                button.classList.toggle("active", button.dataset.layer === "rgb");
+            });
+        }
+        state.diffShown = false;
+        if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        refreshPrevRunOption();
+        setRunButtonsDisabled(false);
         if (elements.btnRunUploadSr) elements.btnRunUploadSr.disabled = false;
 
         // Populate Result Details
@@ -1041,7 +1471,7 @@
         elements.resTime.textContent = `${job.result.processing_time_sec} s`;
         elements.resDevice.textContent = job.result.device_used.toUpperCase();
         if (elements.resModel) {
-            elements.resModel.textContent = job.result.model || (state.selectedModel === "swin2sr" ? "SEN2SR-Swin2SR" : "SEN2SR-Lite");
+            elements.resModel.textContent = job.result.model || displayNameForModel(state.selectedModel);
         }
         if (elements.resVram) {
             elements.resVram.textContent = job.result.peak_vram_mb ? `${job.result.peak_vram_mb} MB` : "N/A";
@@ -1050,6 +1480,8 @@
         elements.btnDownloadGeotiff.href = `/api/sr/jobs/${job.job_id}/download/geotiff`;
         elements.btnDownloadRgb.href = `/api/sr/jobs/${job.job_id}/download/rgb`;
         elements.btnDownloadCir.href = `/api/sr/jobs/${job.job_id}/download/cir`;
+        if (elements.btnDownloadReport) elements.btnDownloadReport.href = `/api/sr/jobs/${job.job_id}/download/report`;
+        if (elements.btnDownloadReportMd) elements.btnDownloadReportMd.href = `/api/sr/jobs/${job.job_id}/download/report-md`;
 
         elements.resultsCard.classList.remove("hidden");
         elements.progressCard.classList.add("hidden");
@@ -1058,6 +1490,7 @@
 
         // Display on Map
         displayJobLayers(job.result);
+        renderValidationDock();
     }
 
     function displayJobLayers(result) {
@@ -1070,15 +1503,15 @@
         const leftUrl = getLayerUrl(state.leftCompareMode, state.colorMode);
         state.layers.left = L.imageOverlay(leftUrl, bounds, {
             opacity: 1.0,
-            interactive: false,
-        }).addTo(state.map);
+            interactive: true,
+        }).addTo(state.map).on("click", (event) => inspectPixel(event.latlng));
 
         // Right Layer (Super-Resolved 2.5m SR RGB)
         const rightUrl = getLayerUrl("sr", state.colorMode);
         state.layers.right = L.imageOverlay(rightUrl, bounds, {
             opacity: 1.0,
-            interactive: false,
-        }).addTo(state.map);
+            interactive: true,
+        }).addTo(state.map).on("click", (event) => inspectPixel(event.latlng));
 
         // Patch Border Outline
         state.patchOutline = L.rectangle(bounds, {
@@ -1097,10 +1530,160 @@
         updateSplitClipping();
     }
 
+    function sameBounds(a, b) {
+        return !!a && !!b && JSON.stringify(a) === JSON.stringify(b);
+    }
+
+    function refreshPrevRunOption() {
+        const opt = document.getElementById("opt-prev-layer");
+        const usable = !!(
+            state.prevJobResult &&
+            state.jobResult &&
+            state.prevJobResult.previews &&
+            sameBounds(state.prevJobResult.leaflet_bounds, state.jobResult.leaflet_bounds)
+        );
+        if (opt) {
+            opt.disabled = !usable;
+            opt.textContent = usable
+                ? `Previous: ${state.prevJobResult.model || "run"}`
+                : "Previous run";
+        }
+        if (elements.btnToggleDiff) {
+            elements.btnToggleDiff.disabled = !usable;
+            if (!usable && state.diffShown) {
+                hideDiffView();
+            }
+        }
+        if (!usable && state.leftCompareMode === "prev") {
+            state.leftCompareMode = "lr";
+            if (elements.selectLeftLayer) elements.selectLeftLayer.value = "lr";
+            if (state.jobResult && state.layers.left) {
+                state.layers.left.setUrl(getLayerUrl("lr", state.colorMode));
+            }
+        }
+        updateLabelTexts();
+    }
+
     function getLayerUrl(type, mode) {
+        if (type === "prev") {
+            if (!state.prevJobResult) return "";
+            const key = `sr_${mode}`;
+            return state.prevJobResult.previews[key] || "";
+        }
         if (!state.jobResult) return "";
         const key = `${type}_${mode}`;
         return state.jobResult.previews[key] || "";
+    }
+
+    // =========================================================================
+    // 8c. Amplified difference heatmap (previous run vs current, client-side)
+    // =========================================================================
+    // Approx inferno ramp stops: [pos, r, g, b]
+    const DIFF_RAMP = [
+        [0.0, 0, 0, 4], [0.13, 31, 12, 72], [0.25, 63, 23, 108],
+        [0.38, 95, 32, 120], [0.5, 129, 41, 107], [0.63, 165, 54, 82],
+        [0.75, 201, 73, 52], [0.88, 230, 107, 31], [1.0, 252, 255, 164],
+    ];
+
+    function rampColor(t) {
+        const x = Math.max(0, Math.min(1, t));
+        for (let i = 1; i < DIFF_RAMP.length; i++) {
+            if (x <= DIFF_RAMP[i][0]) {
+                const [p0, r0, g0, b0] = DIFF_RAMP[i - 1];
+                const [p1, r1, g1, b1] = DIFF_RAMP[i];
+                const f = (x - p0) / Math.max(1e-6, p1 - p0);
+                return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f];
+            }
+        }
+        return DIFF_RAMP[DIFF_RAMP.length - 1].slice(1);
+    }
+
+    function loadPreviewImage(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error("Could not load preview image."));
+            img.src = url;
+        });
+    }
+
+    async function buildDiffDataURL(urlPrev, urlCurr) {
+        const [imgA, imgB] = await Promise.all([loadPreviewImage(urlPrev), loadPreviewImage(urlCurr)]);
+        const w = Math.min(imgA.naturalWidth || imgA.width, imgB.naturalWidth || imgB.width);
+        const h = Math.min(imgA.naturalHeight || imgA.height, imgB.naturalHeight || imgB.height);
+        if (!w || !h) throw new Error("Empty preview image.");
+        const read = (img) => {
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            const ctx = c.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            return ctx.getImageData(0, 0, w, h).data;
+        };
+        const dA = read(imgA);
+        const dB = read(imgB);
+        const n = w * h;
+        const mag = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+            const o = i * 4;
+            mag[i] = (Math.abs(dA[o] - dB[o]) + Math.abs(dA[o + 1] - dB[o + 1]) + Math.abs(dA[o + 2] - dB[o + 2])) / (3 * 255);
+        }
+        const sorted = Array.from(mag).sort((a, b) => a - b);
+        const p99 = sorted[Math.floor(0.99 * (n - 1))] || 0;
+        const amp = 1 / Math.max(p99, 1e-6);
+        state.diffAmp = Math.round(amp);
+        const out = document.createElement("canvas");
+        out.width = w; out.height = h;
+        const octx = out.getContext("2d");
+        const outImg = octx.createImageData(w, h);
+        for (let i = 0; i < n; i++) {
+            const [r, g, b] = rampColor(Math.min(1, mag[i] * amp));
+            const o = i * 4;
+            outImg.data[o] = r; outImg.data[o + 1] = g; outImg.data[o + 2] = b; outImg.data[o + 3] = 255;
+        }
+        octx.putImageData(outImg, 0, 0);
+        return out.toDataURL("image/png");
+    }
+
+    async function toggleDiffView() {
+        const btn = elements.btnToggleDiff;
+        if (!btn || btn.disabled || state.compareRunning) return;
+        if (state.diffShown) {
+            hideDiffView();
+            return;
+        }
+        btn.disabled = true;
+        try {
+            state.analysisLayer = "rgb";
+            if (elements.analysisLayerSwitcher) {
+                elements.analysisLayerSwitcher.querySelectorAll(".analysis-layer-btn").forEach((button) => {
+                    button.classList.toggle("active", button.dataset.layer === "rgb");
+                });
+            }
+            const dataUrl = await buildDiffDataURL(
+                getLayerUrl("prev", state.colorMode),
+                getLayerUrl("sr", state.colorMode)
+            );
+            state.diffShown = true;
+            btn.classList.add("active");
+            if (state.layers.right) state.layers.right.setUrl(dataUrl);
+            updateLabelTexts();
+        } catch (err) {
+            if (elements.aoiDisplayStatus) {
+                elements.aoiDisplayStatus.textContent = `Diff view unavailable: ${err.message}`;
+            }
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function hideDiffView() {
+        state.diffShown = false;
+        if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        if (state.layers.right) {
+            state.layers.right.setUrl(getLayerUrl("sr", state.colorMode));
+        }
+        updateLabelTexts();
     }
 
     function clearOverlays() {
@@ -1279,6 +1862,12 @@
                 }
             });
         }
+
+        if (elements.btnToggleDiff) {
+            elements.btnToggleDiff.addEventListener("click", () => {
+                toggleDiffView();
+            });
+        }
     }
 
     function setColorMode(mode) {
@@ -1286,15 +1875,26 @@
         elements.btnModeRgb.classList.toggle("active", mode === "rgb");
         elements.btnModeCir.classList.toggle("active", mode === "cir");
 
+        if (state.diffShown) {
+            state.diffShown = false;
+            if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        }
+
         if (state.jobResult) {
             if (state.layers.left) {
                 state.layers.left.setUrl(getLayerUrl(state.leftCompareMode, mode));
             }
             if (state.layers.right) {
-                state.layers.right.setUrl(getLayerUrl("sr", mode));
+                if (state.analysisLayer === "rgb") state.layers.right.setUrl(getLayerUrl("sr", mode));
             }
         }
         updateLabelTexts();
+    }
+
+    function displayNameForModel(variant) {
+        if (variant === "swin2sr") return "SEN2SR-Swin2SR";
+        if (variant === "lite-ft") return "SEN2SR-Lite FT";
+        return "SEN2SR-Lite";
     }
 
     function initModelSelector() {
@@ -1302,20 +1902,17 @@
         radios.forEach((radio) => {
             radio.addEventListener("change", (e) => {
                 state.selectedModel = e.target.value;
-                const isSwin = state.selectedModel === "swin2sr";
 
                 const labelLite = document.getElementById("label-model-lite");
                 const labelSwin = document.getElementById("label-model-swin");
-                if (labelLite) labelLite.classList.toggle("active", !isSwin);
-                if (labelSwin) labelSwin.classList.toggle("active", isSwin);
+                const labelLiteFt = document.getElementById("label-model-liteft");
+                if (labelLite) labelLite.classList.toggle("active", state.selectedModel === "lite");
+                if (labelSwin) labelSwin.classList.toggle("active", state.selectedModel === "swin2sr");
+                if (labelLiteFt) labelLiteFt.classList.toggle("active", state.selectedModel === "lite-ft");
 
                 const explainer = document.getElementById("upscale-explainer-text");
                 if (explainer) {
-                    if (isSwin) {
-                        explainer.innerHTML = `<strong>SEN2SR-Swin2SR</strong> &bull; 10 m &rarr; 2.5 m`;
-                    } else {
-                        explainer.innerHTML = `<strong>SEN2SR-Lite</strong> &bull; 10 m &rarr; 2.5 m`;
-                    }
+                    explainer.innerHTML = `<strong>${displayNameForModel(state.selectedModel)}</strong> &bull; 10 m &rarr; 2.5 m`;
                 }
                 updateLabelTexts();
             });
@@ -1326,13 +1923,23 @@
         const modeLabel = state.colorMode === "rgb" ? "Natural" : "Infrared";
         if (state.leftCompareMode === "bicubic") {
             elements.labelLeftText.textContent = `Bicubic · 2.5 m · ${modeLabel}`;
+        } else if (state.leftCompareMode === "prev" && state.prevJobResult) {
+            const prevName = state.prevJobResult.model || "Previous";
+            elements.labelLeftText.textContent = `${prevName} · 2.5 m · ${modeLabel}`;
         } else {
             elements.labelLeftText.textContent = `Original · 10 m · ${modeLabel}`;
         }
         const modelName = (state.jobResult && state.jobResult.model)
             ? state.jobResult.model
-            : (state.selectedModel === "swin2sr" ? "SEN2SR-Swin2SR" : "SEN2SR-Lite");
-        elements.labelRightText.textContent = `${modelName} · 2.5 m · ${modeLabel}`;
+            : displayNameForModel(state.selectedModel);
+        if (state.diffShown) {
+            elements.labelRightText.textContent = `Amplified Δ ×${state.diffAmp} · FT vs prev`;
+        } else if (state.analysisLayer !== "rgb") {
+            const layerLabels = { confidence: "Reconstruction confidence", novelty: "Added neural detail", ndvi: "NDVI" };
+            elements.labelRightText.textContent = `${layerLabels[state.analysisLayer] || state.analysisLayer} · ${modelName}`;
+        } else {
+            elements.labelRightText.textContent = `${modelName} · 2.5 m · ${modeLabel}`;
+        }
     }
 
     // =========================================================================
@@ -1350,7 +1957,9 @@
         initDemo();
         initModelSelector();
         initSrExecution();
+        initCompare();
         initSliderAndModes();
+        initValidationUi();
 
         if (state.map) {
             state.map.on("move", updateSplitClipping);

@@ -16,6 +16,7 @@ from ntro_srm.models.sen2sr import SEN2SRModel
 from ntro_srm.preprocessing.sentinel2 import NormalizationMode, normalize_sentinel2_l2a
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
 from ntro_srm.utils.geotiff import compute_sr_transform, write_sr_geotiff
+from ntro_srm.utils.device import synchronize_device
 
 
 @dataclass
@@ -80,7 +81,7 @@ class Sentinel2SRPipeline:
         model_variant : str, default="lite"
             Super-resolution model architecture ("lite" is default).
         device : str or torch.device, optional
-            Compute device ("cuda" or "cpu").
+            Compute device ("cuda", "mps", or "cpu").
         checkpoint_dir : str or Path, optional
             Path to pretrained model checkpoint directory.
         """
@@ -134,7 +135,7 @@ class Sentinel2SRPipeline:
         is_cuda = self.device.type == "cuda"
         if is_cuda:
             torch.cuda.reset_peak_memory_stats()
-            torch.cuda.synchronize()
+        synchronize_device(self.device)
 
         start_time = time.perf_counter()
         sr_tensor = self.model.predict(
@@ -144,8 +145,8 @@ class Sentinel2SRPipeline:
             overlap=overlap,
         )
 
+        synchronize_device(self.device)
         if is_cuda:
-            torch.cuda.synchronize()
             peak_memory_mb = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
         else:
             peak_memory_mb = None
@@ -158,7 +159,13 @@ class Sentinel2SRPipeline:
         # 5. Optionally write to GeoTIFF
         saved_path: Optional[Path] = None
         if output_path is not None:
-            model_label = "SEN2SR-Swin2SR" if self.model.model_variant == "swin2sr" else "SEN2SR-Lite"
+            variant = self.model.model_variant
+            if variant == "swin2sr":
+                model_label = "SEN2SR-Swin2SR"
+            elif variant == "lite-ft":
+                model_label = "SEN2SR-Lite FT"
+            else:
+                model_label = "SEN2SR-Lite"
             saved_path = write_sr_geotiff(
                 output_path=output_path,
                 tensor=sr_tensor,

@@ -1,7 +1,7 @@
 # NTRO-SRM: Deep Learning Based Super-Resolution Mapping Framework
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
-[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x%20CUDA-ee4c2c.svg)](https://pytorch.org/)
+[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x%20CUDA%20%7C%20MPS-ee4c2c.svg)](https://pytorch.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests: Passing](https://img.shields.io/badge/Tests-26%2F26%20Passed-brightgreen.svg)](tests/)
@@ -130,12 +130,15 @@ Comparison generated from the Mountain Lake Sentinel-2 test scene:
 ## Usage Guide
 
 For complete, detailed instructions, see:
-- 📖 **[INSTALL.md](INSTALL.md):** Complete installation guide for Linux, Windows (WSL2), macOS, and CUDA configuration.
+- 📖 **[INSTALL.md](INSTALL.md):** Complete installation guide for Linux, Windows (WSL2), macOS, CUDA, and Apple MPS.
 - 📖 **[USAGE.md](USAGE.md):** Comprehensive guide covering the Web UI, CLI flags, and Python SDK.
 
 ### Command-Line Interface (CLI)
 
 Run super-resolution directly on any multi-band GeoTIFF:
+
+The device is selected automatically in the order CUDA, Apple MPS, then CPU.
+Pass `--device` only when you need to override that choice.
 
 ```bash
 source venv/bin/activate
@@ -144,8 +147,7 @@ source venv/bin/activate
 python scripts/sr_sentinel2.py \
   --input datasets/sample_s2/sample_s2_l2a.tif \
   --output outputs/sr_lite_2.5m.tif \
-  --model lite \
-  --device cuda
+  --model lite
 
 # High-Quality Vision Transformer (SEN2SR-Swin2SR)
 python scripts/sr_sentinel2.py \
@@ -161,7 +163,7 @@ python scripts/sr_sentinel2.py \
 from pathlib import Path
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline
 
-pipeline = Sentinel2SRPipeline(model_variant="lite", device="cuda")
+pipeline = Sentinel2SRPipeline(model_variant="lite", device=None)
 
 result = pipeline.predict(
     input_path=Path("datasets/sample_s2/sample_s2_l2a.tif"),
@@ -190,6 +192,11 @@ Spectral Angle Mapper, ERGAS, and NDVI/NDWI drift. Source consistency is reporte
 separately from reference accuracy: agreement after downsampling to 10 m does
 not prove that reconstructed 2.5 m details are correct. See
 **[EVALUATION.md](EVALUATION.md)** for metric definitions and usage.
+
+Completed web jobs also expose radiometric consistency, a novelty-based
+confidence surface, ten crop/water/urban/burn indices, and downloadable JSON and
+Markdown QA reports. Wald validation and multi-pass uncertainty are available as
+explicit options because they require additional model inference.
 
 For paired-data fine-tuning, `SpectralSpatialLoss` combines robust pixel
 reconstruction, spectral-vector agreement, spatial-gradient preservation,

@@ -43,6 +43,17 @@ Select your desired super-resolution neural network in the sidebar before clicki
   - Architecture: Vision Transformer (Swin2SR) + State-Space (MambaSR)
   - Memory Footprint: ~2.46 GB VRAM on CUDA
   - Best for: Complex structural detail, fine edge reconstruction, and dense infrastructure.
+- **SEN2SR-Lite FT (Project Fine-Tuned):**
+  - Same Lite architecture (~2s inference). `lite-ft` now serves the **distilled**
+    weights when present (`outputs/finetune/lite_distill_best.pt`, Swin2SR->Lite
+    on 80 cached 128px tiles, 62 train / 18 val, test sites held out), falling
+    back to Wald/NAIP fine-tune (`lite_ft_best.pt`).
+  - Distilled held-out checks (IND_DELHI_URBAN, never distilled): closest to the
+    Swin teacher in pixel + gradient fidelity (beats base and FT on both test
+    tiles); source-consistency RMSE better than base (Mountain Lake 0.0114 vs
+    0.0123; Delhi 0.0187 vs 0.0206).
+  - Select `lite-ft` in the Web UI, CLI (`--model lite-ft`), or REST (`model=lite-ft`).
+  - Requires `outputs/finetune/lite_distill_best.pt` (or `lite_ft_best.pt`); if missing, run the distill or fine-tune script first (see “Model training” below).
 
 #### 3. Real-Time Processing & Telemetry
 Click **"UPSCALE PATCH TO 2.5m"**. The application tracks:
@@ -53,20 +64,30 @@ Click **"UPSCALE PATCH TO 2.5m"**. The application tracks:
 Once inference completes, Leaflet map overlays are dynamically rendered:
 - **Swipe Split View (Default):** Drag the horizontal slider left/right to compare native $10\text{m}$ input against $2.5\text{m}$ super-resolved output.
 - **Side Selection:** Switch the left comparison pane between **Native 10m S2** and **Bicubic 2.5m Baseline**.
+- **Cross-Model Compare:** Click **Compare Lite vs FT** to run both models on the same area back-to-back; the swipe then shows Lite vs FT automatically. Any previous same-area run can also be picked from the **Left** dropdown as **Previous: MODEL**.
+- **Difference Heatmap:** With a previous run active, click **Diff** to overlay an amplified FT-vs-previous heatmap (99th-percentile saturated; the factor is shown in the label, e.g. `Amplified Δ ×66`). Bright means the fine-tune changed the reconstruction there — typically edges and boundaries.
 - **Continuous Opacity Blend:** Switch to **Blend** mode and adjust the opacity slider from 0% to 100%.
 - **Single Layer Mode:** Toggle **10m Native Only** or **2.5m SR Only**.
 
-#### 5. Dual Multi-Spectral Color Modes
+#### 5. Validation Dashboard & Pixel Inspection
+Every web run now includes a compact scientific validation panel on the map:
+- **Wald validation:** PSNR, SSIM, spectral angle (SAM), and ERGAS are measured at the $40\text{m}\to10\text{m}$ scale, where the original 10 m image is available as a reference. These figures indicate model accuracy; they do not claim unavailable 2.5 m ground truth.
+- **Run benchmark:** **Compare Lite vs FT** reports each metric delta and states which model leads across the headline measures.
+- **Analytical overlays:** Switch the result side of the map between the image, reconstruction confidence, added neural detail, and NDVI.
+- **Pixel inspector:** Click inside the processed patch to compare the observed 10 m and reconstructed 2.5 m spectra, NDVI/NDWI, and local confidence.
+- **Full report:** Open the per-band table and interpretation limits, or download the JSON and Markdown reports from the result card.
+
+#### 6. Dual Multi-Spectral Color Modes
 - **Natural RGB Mode:** True color representation combining Red (B04), Green (B03), and Blue (B02) calibrated using physical reflectance scaling to avoid neon saturation.
 - **Color Infrared (CIR) Mode:** High-contrast false color infrared combining NIR (B08), Red (B04), and Green (B03) rendering healthy photosynthetic vegetation in rich crimson tones.
 
-#### 6. Direct GeoTIFF Upload (Tab 2)
+#### 7. Direct GeoTIFF Upload (Tab 2)
 To upscale an existing Sentinel-2 GeoTIFF from your disk:
 1. Navigate to **Tab 2: Upload GeoTIFF**.
 2. Drag and drop any 10-band, 12-band, or RGB GeoTIFF file up to $512 \times 512$ pixels.
 3. Click **"Upscale Uploaded Image"**.
 
-#### 7. Downloading Super-Resolved Products
+#### 8. Downloading Super-Resolved Products
 Download buttons appear automatically upon completion:
 - **Download 10-Band 2.5m GeoTIFF:** Full scientific 32-bit floating-point multi-band raster with exact CRS and geotransform.
 - **Download RGB (PNG):** Georeferenced true-color image.
@@ -84,7 +105,7 @@ python scripts/sr_sentinel2.py \
   --input <path_to_input_geotiff> \
   --output <path_to_output_geotiff> \
   [--model {lite,swin2sr}] \
-  [--device {cuda,cpu}] \
+  [--device {cuda,mps,cpu}] \
   [--overlap OVERLAP_PIXELS]
 ```
 
@@ -118,11 +139,54 @@ python scripts/sr_sentinel2.py \
   --device cpu
 ```
 
-#### Example 4: Run Dual Model Benchmark Script
+#### Example 4: Apple Silicon GPU Execution
+```bash
+python scripts/sr_sentinel2.py \
+  --input datasets/sample_s2/sample_s2_l2a.tif \
+  --output outputs/sample_s2_mps_2.5m.tif \
+  --model lite \
+  --device mps
+```
+
+#### Example 5: Run Dual Model Benchmark Script
 ```bash
 python scripts/compare_models.py
 ```
 This generates side-by-side triptych comparisons saved in `outputs/comparisons/`.
+
+#### Example 6: Compare Base Lite vs Best (Distilled) Weights
+```bash
+python scripts/compare_ft.py --input datasets/sample_s2/sample_s2_l2a.tif
+# Compare against the older Wald/NAIP fine-tune instead:
+python scripts/compare_ft.py --checkpoint outputs/finetune/lite_ft_best.pt
+```
+
+---
+
+## 2b. Model Training (Fine-Tune & Distillation)
+
+Wald/NAIP fine-tuning (small moves, same architecture):
+
+```bash
+venv/bin/python scripts/finetune_lite.py --epochs 5                              # Wald warmup
+venv/bin/python scripts/finetune_lite.py --epochs 8 --pair-types wald,real_paired \
+  --resume outputs/finetune/lite_ft_best.pt --lr 5e-5 --grad-weight 0.4 \
+  --scheduler cosine --augment --batch-size 8
+```
+
+Swin2SR → Lite distillation (visible edge transfer, same ~2s inference).
+Teacher targets are cached once (~55 min on MPS, resumable), training takes minutes:
+
+```bash
+venv/bin/python scripts/cache_teacher.py            # one-time: 80 tiles -> datasets/distill_cache/
+venv/bin/python scripts/distill_lite.py             # 10 epochs, init from best FT weights
+# Continue a finished run for further gains (adopts new LR/schedule):
+venv/bin/python scripts/distill_lite.py --init-checkpoint outputs/finetune/lite_distill_best.pt \
+  --output outputs/finetune/lite_distill_v2.pt --lr 2e-5 --epochs 10
+```
+
+`lite-ft` (Web/CLI/REST) automatically serves `lite_distill_best.pt` when present,
+else `lite_ft_best.pt`.
 
 ---
 
@@ -138,7 +202,7 @@ from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline
 # 1. Initialize pipeline with requested model variant
 pipeline = Sentinel2SRPipeline(
     model_variant="swin2sr",  # or "lite"
-    device="cuda",            # or "cpu"
+    device=None,              # auto: CUDA, then Apple MPS, then CPU
 )
 
 # 2. Execute 4x super-resolution and export to GeoTIFF
@@ -179,7 +243,7 @@ The FastAPI backend exposes the following RESTful endpoints:
 
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
-| `/api/system-info` | `GET` | Returns GPU name, available VRAM, CUDA status, and model metadata. |
+| `/api/system-info` | `GET` | Returns the active device, CUDA/MPS availability, VRAM when available, and model metadata. |
 | `/api/demo/info` | `GET` | Returns metadata of pre-installed local Sentinel-2 sample scene. |
 | `/api/sentinel/search` | `POST` | Queries STAC catalog (CDSE or AWS Earth Search) for cloud-free Sentinel-2 scenes. |
 | `/api/sr/process` | `POST` | Enqueues background super-resolution job for specified AOI and model. |

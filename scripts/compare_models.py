@@ -11,6 +11,7 @@ import rasterio
 import torch
 
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline
+from ntro_srm.utils.device import empty_device_cache, select_device
 from ntro_srm.web.services.sr_service import render_false_color_cir, render_true_color_rgb
 
 
@@ -19,6 +20,7 @@ def main():
     input_path = root / "datasets" / "sample_s2" / "sample_s2_l2a.tif"
     out_dir = root / "outputs" / "comparisons"
     out_dir.mkdir(parents=True, exist_ok=True)
+    device = select_device()
 
     artifact_dir = Path("/home/harsh/.gemini/antigravity-cli/brain/ef21fa25-6741-4bb7-a4d7-bd9d1dafb7d9")
 
@@ -32,11 +34,11 @@ def main():
     # 1. Run SEN2SR-Lite
     lite_out_path = out_dir / "sample_s2_sen2sr_lite_2.5m.tif"
     print("\n[2/5] Running SEN2SR-Lite (Fast Baseline)...")
-    torch.cuda.empty_cache()
+    empty_device_cache(device)
     gc.collect()
 
     t0 = time.perf_counter()
-    pipeline_lite = Sentinel2SRPipeline(model_variant="lite", device="cuda")
+    pipeline_lite = Sentinel2SRPipeline(model_variant="lite", device=device)
     res_lite = pipeline_lite.predict(
         input_path=input_path,
         output_path=lite_out_path,
@@ -44,19 +46,20 @@ def main():
     )
     lite_time = time.perf_counter() - t0
     print(f"      SEN2SR-Lite completed in {lite_time:.2f}s")
-    print(f"      Peak VRAM: {res_lite.peak_gpu_memory_mb:.1f} MB")
+    if res_lite.peak_gpu_memory_mb is not None:
+        print(f"      Peak VRAM: {res_lite.peak_gpu_memory_mb:.1f} MB")
     print(f"      Output Shape: {res_lite.output_shape}")
 
     # Unload Lite pipeline
     del pipeline_lite
-    torch.cuda.empty_cache()
+    empty_device_cache(device)
     gc.collect()
 
     # 2. Run SEN2SR-Swin2SR
     swin_out_path = out_dir / "sample_s2_sen2sr_swin_2.5m.tif"
     print("\n[3/5] Running SEN2SR-Swin2SR (Higher-Capacity Model)...")
     t0 = time.perf_counter()
-    pipeline_swin = Sentinel2SRPipeline(model_variant="swin2sr", device="cuda")
+    pipeline_swin = Sentinel2SRPipeline(model_variant="swin2sr", device=device)
     res_swin = pipeline_swin.predict(
         input_path=input_path,
         output_path=swin_out_path,
@@ -64,7 +67,8 @@ def main():
     )
     swin_time = time.perf_counter() - t0
     print(f"      SEN2SR-Swin2SR completed in {swin_time:.2f}s")
-    print(f"      Peak VRAM: {res_swin.peak_gpu_memory_mb:.1f} MB")
+    if res_swin.peak_gpu_memory_mb is not None:
+        print(f"      Peak VRAM: {res_swin.peak_gpu_memory_mb:.1f} MB")
     print(f"      Output Shape: {res_swin.output_shape}")
 
     # 3. Verify GeoTIFFs
@@ -168,8 +172,8 @@ def main():
         print(f"      Saved comparison images to {artifact_dir}")
 
     print("\n[SUCCESS] Model Comparison Complete!")
-    print(f"SEN2SR-Lite:    Runtime={lite_time:.2f}s, Peak VRAM={res_lite.peak_gpu_memory_mb:.1f} MB")
-    print(f"SEN2SR-Swin2SR: Runtime={swin_time:.2f}s, Peak VRAM={res_swin.peak_gpu_memory_mb:.1f} MB")
+    print(f"SEN2SR-Lite:    Runtime={lite_time:.2f}s on {device}")
+    print(f"SEN2SR-Swin2SR: Runtime={swin_time:.2f}s on {device}")
 
 
 if __name__ == "__main__":

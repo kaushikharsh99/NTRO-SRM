@@ -27,6 +27,7 @@ import torch
 
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline, Sentinel2SRResult
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
+from ntro_srm.utils.device import select_device
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,8 +53,8 @@ def parse_args() -> argparse.Namespace:
         "--device",
         "-d",
         type=str,
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        choices=["cuda", "cpu"],
+        default=str(select_device()),
+        choices=["cuda", "mps", "cpu"],
         help="Compute device for neural network inference.",
     )
     parser.add_argument(
@@ -61,8 +62,8 @@ def parse_args() -> argparse.Namespace:
         "-m",
         type=str,
         default="lite",
-        choices=["lite"],
-        help="Model architecture variant.",
+        choices=["lite", "lite-ft"],
+        help="Model architecture variant ('lite-ft' loads Wald fine-tuned weights).",
     )
     parser.add_argument(
         "--norm-mode",
@@ -116,16 +117,32 @@ def main() -> int:
 
     # 2. Pipeline Initialization
     print("INITIALIZING MODEL:")
-    print(f"  Model Variant:   SEN2SR-{args.model.capitalize()}")
+    model_label = "SEN2SR-Lite FT" if args.model == "lite-ft" else "SEN2SR-Lite"
+    print(f"  Model Variant:   {model_label}")
     print(f"  Device:          {args.device}")
     if args.device == "cuda":
         print(f"  CUDA Device:     {torch.cuda.get_device_name(0)}")
+    elif args.device == "mps":
+        print("  Apple GPU:       Metal Performance Shaders")
 
     try:
         pipeline = Sentinel2SRPipeline(
-            model_variant=args.model,
+            model_variant="lite",
             device=args.device,
         )
+        if args.model == "lite-ft":
+            from ntro_srm.training.trainer import find_ft_checkpoint, load_checkpoint
+
+            ft_ckpt = find_ft_checkpoint(project_root)
+            if ft_ckpt is None:
+                print("[ERROR] Fine-tuned weights not found. Run "
+                      "'python scripts/finetune_lite.py --epochs 5' first.")
+                return 1
+            load_checkpoint(ft_ckpt, pipeline.model)
+            pipeline.model.set_trainable(False)
+            pipeline.model.eval()
+            pipeline.model.model_variant = "lite-ft"
+            print(f"  Fine-tuned weights: {ft_ckpt}")
     except Exception as err:
         print(f"[ERROR] Failed to load model: {err}")
         return 1
