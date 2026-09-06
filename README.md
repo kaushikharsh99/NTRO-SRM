@@ -173,6 +173,30 @@ print(f"Output Resolution: {result.output_shape} (10 bands, 2.5m GSD)")
 print(f"Coordinate Reference System: {result.crs}")
 ```
 
+### Scientific evaluation
+
+Evaluate an SR product against the Sentinel-2 observation, a paired
+high-resolution reference, or both:
+
+```bash
+python -m ntro_srm.evaluation outputs/result_2.5m.tif \
+  --source datasets/sample_s2/sample_s2_l2a.tif \
+  --reference datasets/reference_2.5m.tif \
+  --output outputs/evaluation.json
+```
+
+The JSON report contains geospatial checks, per-band MAE/RMSE/bias/PSNR/SSIM,
+Spectral Angle Mapper, ERGAS, and NDVI/NDWI drift. Source consistency is reported
+separately from reference accuracy: agreement after downsampling to 10 m does
+not prove that reconstructed 2.5 m details are correct. See
+**[EVALUATION.md](EVALUATION.md)** for metric definitions and usage.
+
+For paired-data fine-tuning, `SpectralSpatialLoss` combines robust pixel
+reconstruction, spectral-vector agreement, spatial-gradient preservation,
+low-resolution observation consistency, and physical reflectance constraints.
+The proposed system architecture and implementation status are documented in
+**[TECHNICAL_APPROACH.md](TECHNICAL_APPROACH.md)**.
+
 ---
 
 ## Project Structure
@@ -200,7 +224,7 @@ NTRO-SRM/
 │   ├── preprocessing/        # Radiometric normalization & transforms
 │   ├── utils/                # Affine transform & GeoTIFF utilities
 │   └── web/                  # FastAPI router, schemas, & STAC services
-├── tests/                    # Complete pytest suite (26 passing tests)
+├── tests/                    # Automated unit and integration tests
 ├── third_party/              # Upstream ESAOpenSR SEN2SR repository (100% untouched)
 ├── web/
 │   ├── static/               # CSS, JavaScript, icons, Leaflet assets
@@ -227,10 +251,6 @@ Run the automated test suite covering schemas, data ingestion, radiometric trans
 ```bash
 source venv/bin/activate
 pytest -q
-```
-```text
-..........................                                               [100%]
-26 passed in 42.64s
 ```
 
 ---

@@ -144,3 +144,27 @@ class TestSEN2SRAdapter:
         assert bool(torch.isfinite(sr).all().item())
         assert (sr >= 0.0).all(), "Surface reflectance must be non-negative"
         assert sr.mean() > 0.0
+
+    def test_backbone_can_be_enabled_for_fine_tuning(self, sen2sr_model: SEN2SRModel):
+        sen2sr_model.set_trainable(True)
+        try:
+            assert sen2sr_model.model.training is True
+            assert all(parameter.requires_grad for parameter in sen2sr_model.model.parameters())
+
+            output = sen2sr_model(torch.rand(1, 10, 128, 128))
+            output.mean().backward()
+            gradients = [
+                parameter.grad
+                for parameter in sen2sr_model.model.parameters()
+                if parameter.requires_grad
+            ]
+            assert any(gradient is not None for gradient in gradients)
+            assert all(
+                gradient is None or torch.isfinite(gradient).all()
+                for gradient in gradients
+            )
+        finally:
+            sen2sr_model.zero_grad(set_to_none=True)
+            sen2sr_model.set_trainable(False)
+        assert sen2sr_model.model.training is False
+        assert not any(parameter.requires_grad for parameter in sen2sr_model.model.parameters())

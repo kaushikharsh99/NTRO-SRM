@@ -60,6 +60,7 @@ setup(
     entry_points={
         "console_scripts": [
             "ntro-srm-web=ntro_srm.web.app:run_server",
+            "ntro-srm-evaluate=ntro_srm.evaluation.__main__:main",
         ],
     },
 )

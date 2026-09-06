@@ -82,6 +82,7 @@ class SEN2SRModel(nn.Module):
         device: Optional[Union[str, torch.device]] = None,
         checkpoint_dir: Optional[Union[str, Path]] = None,
         auto_download: bool = True,
+        trainable: bool = False,
     ) -> None:
         """Initialize the SEN2SR adapter.
 
@@ -97,6 +98,9 @@ class SEN2SRModel(nn.Module):
         auto_download : bool, default=True
             Whether to download pretrained weights from Hugging Face if checkpoint_dir
             does not exist.
+        trainable : bool, default=False
+            Enable gradients on the upstream backbone for fine-tuning. Inference
+            remains the safe default.
         """
         super().__init__()
 
@@ -130,11 +134,25 @@ class SEN2SRModel(nn.Module):
         # Load or download pretrained model
         self.model = self._load_model(auto_download=auto_download)
         self.model.to(self.device)
-        self.model.eval()
+        self.set_trainable(trainable)
 
-        # Freeze all weights (pure inference)
-        for param in self.model.parameters():
-            param.requires_grad = False
+    def set_trainable(self, trainable: bool) -> None:
+        """Switch backbone parameter gradients and training mode explicitly."""
+        if trainable:
+            # MLSTAC may construct checkpoint tensors inside torch.inference_mode().
+            # Such tensors cannot later enable autograd, so materialize ordinary
+            # Parameter/buffer copies before fine-tuning.
+            for module in self.model.modules():
+                for name, parameter in list(module.named_parameters(recurse=False)):
+                    if parameter.is_inference():
+                        replacement = nn.Parameter(parameter.detach().clone(), requires_grad=True)
+                        setattr(module, name, replacement)
+                for name, buffer in list(module.named_buffers(recurse=False)):
+                    if buffer is not None and buffer.is_inference():
+                        module._buffers[name] = buffer.detach().clone()
+        for parameter in self.model.parameters():
+            parameter.requires_grad = trainable
+        self.model.train(mode=trainable)
 
     def _load_model(self, auto_download: bool) -> nn.Module:
         """Load compiled model from MLSTAC checkpoint."""
@@ -162,7 +180,6 @@ class SEN2SRModel(nn.Module):
         stac_item = mlstac.load(str(self.checkpoint_dir))
         return stac_item.compiled_model(device=device_str)
 
-    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the underlying SEN2SR model.
 
@@ -180,6 +197,7 @@ class SEN2SRModel(nn.Module):
         return self.model(x)
 
     @torch.no_grad()
+    @torch.inference_mode()
     def predict(
         self,
         lr: torch.Tensor,
