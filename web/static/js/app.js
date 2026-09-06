@@ -17,11 +17,11 @@
         aoiStartLatLng: null,
         currentAoi: null, // { min_lon, min_lat, max_lon, max_lat }
         selectedScene: null,
-        selectedModel: "lite", // "lite" | "swin2sr"
+        selectedModel: "lite", // "lite" | "lite-ft" | "swin2sr"
         activeJobId: null,
         jobPollTimer: null,
         colorMode: "rgb", // "rgb" | "cir"
-        leftCompareMode: "lr", // "lr" | "bicubic"
+        leftCompareMode: "lr", // "lr" | "bicubic" | "prev"
         viewMode: "split", // "split" | "lr_only" | "sr_only" | "blend"
         srOpacity: 100, // 0 to 100
         sliderPosRatio: 0.5, // 0.0 to 1.0
@@ -31,6 +31,10 @@
             right: null,
         },
         jobResult: null,
+        prevJobResult: null, // last completed run kept for cross-model compare
+        compareRunning: false,
+        diffShown: false,
+        diffAmp: 0,
         uploadedFile: null,
         userLocationMarker: null,
         userLocationCircle: null,
@@ -52,6 +56,7 @@
             btnClearAoi: document.getElementById("btn-clear-aoi"),
             btnSearchScenes: document.getElementById("btn-search-scenes"),
             btnRunSr: document.getElementById("btn-run-sr"),
+            btnCompareModels: document.getElementById("btn-compare-models"),
             btnModeRgb: document.getElementById("btn-mode-rgb"),
             btnModeCir: document.getElementById("btn-mode-cir"),
             selectLeftLayer: document.getElementById("select-left-layer"),
@@ -65,6 +70,7 @@
             srOpacitySlider: document.getElementById("sr-opacity-slider"),
             srOpacityVal: document.getElementById("sr-opacity-val"),
             btnZoomPatch: document.getElementById("btn-zoom-patch"),
+            btnToggleDiff: document.getElementById("btn-toggle-diff"),
             btnLocateMe: document.getElementById("btn-locate-me"),
             dateFrom: document.getElementById("date-from"),
             dateTo: document.getElementById("date-to"),
@@ -577,7 +583,7 @@
         }
 
         // Enable 1-Click Upscale immediately
-        elements.btnRunSr.disabled = false;
+        setRunButtonsDisabled(false);
     }
 
     function updateAoiMetrics(bounds) {
@@ -612,10 +618,10 @@
         if (totalPx > maxPx) {
             elements.aoiWarning.textContent = `This area contains about ${totalPx.toLocaleString()} pixels. Draw a smaller region.`;
             elements.aoiWarning.classList.remove("hidden");
-            elements.btnRunSr.disabled = true;
+            setRunButtonsDisabled(true);
         } else {
             elements.aoiWarning.classList.add("hidden");
-            elements.btnRunSr.disabled = false;
+            setRunButtonsDisabled(false);
         }
 
         elements.aoiDisplayStatus.textContent = `${wPx}×${hPx} px at 10 m → ${wSr}×${hSr} px at 2.5 m`;
@@ -639,7 +645,7 @@
                 elements.aoiPixels.textContent = "--";
                 if (elements.aoiSrPixels) elements.aoiSrPixels.textContent = "--";
                 elements.aoiWarning.classList.add("hidden");
-                elements.btnRunSr.disabled = true;
+                setRunButtonsDisabled(true);
                 elements.selectedSceneCard.classList.add("hidden");
                 elements.aoiDisplayStatus.textContent = "Draw an area or choose a location";
             });
@@ -874,7 +880,7 @@
         elements.selectedSceneCard.classList.remove("hidden");
 
         if (state.currentAoi && elements.aoiWarning.classList.contains("hidden")) {
-            elements.btnRunSr.disabled = false;
+            setRunButtonsDisabled(false);
         }
     }
 
@@ -936,7 +942,7 @@
     }
 
     async function launchSrProcessing(isDemo = false) {
-        elements.btnRunSr.disabled = true;
+        setRunButtonsDisabled(true);
         elements.progressCard.classList.remove("hidden");
         elements.resultsCard.classList.add("hidden");
         clearOverlays();
@@ -972,11 +978,103 @@
             pollJobStatus(state.activeJobId);
         } catch (err) {
             updateProgressUI(100, `Error: ${err.message}`);
-            elements.btnRunSr.disabled = false;
+            setRunButtonsDisabled(false);
         }
     }
 
-    function pollJobStatus(jobId) {
+    // =========================================================================
+    // 8b. One-Click Compare: Lite vs Lite-FT on the same AOI, then auto-swipe
+    // =========================================================================
+    function runSrJobOnce(payload, phaseLabel) {
+        return new Promise((resolve, reject) => {
+            fetch("/api/sr/process", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            }).then(async (resp) => {
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+                    throw new Error(err.detail || "Failed to start super-resolution job.");
+                }
+                const data = await resp.json();
+                state.activeJobId = data.job_id;
+                updateProgressUI(10, `${phaseLabel}: processing…`);
+                pollJobStatus(data.job_id, (job, err) => {
+                    if (err || !job) {
+                        reject(err || new Error("Job failed."));
+                    } else {
+                        resolve(job);
+                    }
+                });
+            }).catch(reject);
+        });
+    }
+
+    async function compareLiteVsFt() {
+        if (!state.map || state.compareRunning) return;
+        if (!state.currentAoi || (elements.btnRunSr && elements.btnRunSr.disabled)) {
+            alert("Please define an Area of Interest (AOI) on the map first.");
+            return;
+        }
+        state.compareRunning = true;
+        setRunButtonsDisabled(true);
+        elements.progressCard.classList.remove("hidden");
+        elements.resultsCard.classList.add("hidden");
+        clearOverlays();
+        resetProgressSteps();
+
+        const sceneId = state.selectedScene ? state.selectedScene.id : "auto";
+        const variants = ["lite", "lite-ft"];
+        const done = {};
+        try {
+            for (let i = 0; i < variants.length; i++) {
+                const variant = variants[i];
+                updateProgressUI(5, `Compare ${i + 1}/2: launching ${displayNameForModel(variant)}…`);
+                const job = await runSrJobOnce({
+                    aoi: state.currentAoi,
+                    scene_id: sceneId,
+                    is_demo: false,
+                    model: variant,
+                    overlap: 32,
+                    clamp_output: true,
+                }, `Compare ${i + 1}/2 ${displayNameForModel(variant)}`);
+                done[variant] = job;
+            }
+        } catch (err) {
+            updateProgressUI(100, `Compare failed: ${err.message}`);
+            state.compareRunning = false;
+            setRunButtonsDisabled(false);
+            return;
+        }
+
+        // Present FT on the right, Lite on the left, swipe ready.
+        onJobCompleted({ job_id: done["lite-ft"].job_id, result: done["lite-ft"].result });
+        state.prevJobResult = done["lite"].result;
+        state.leftCompareMode = "prev";
+        if (elements.selectLeftLayer) elements.selectLeftLayer.value = "prev";
+        refreshPrevRunOption();
+        if (state.layers.left) {
+            state.layers.left.setUrl(getLayerUrl("prev", state.colorMode));
+        }
+        updateLabelTexts();
+        state.compareRunning = false;
+        setRunButtonsDisabled(false);
+    }
+
+    function initCompare() {
+        if (elements.btnCompareModels) {
+            elements.btnCompareModels.addEventListener("click", () => {
+                compareLiteVsFt();
+            });
+        }
+    }
+
+    function setRunButtonsDisabled(disabled) {
+        if (elements.btnRunSr) elements.btnRunSr.disabled = disabled;
+        if (elements.btnCompareModels) elements.btnCompareModels.disabled = disabled;
+    }
+
+    function pollJobStatus(jobId, onDone) {
         if (state.jobPollTimer) clearInterval(state.jobPollTimer);
 
         state.jobPollTimer = setInterval(async () => {
@@ -989,12 +1087,20 @@
 
                 if (job.status === "completed") {
                     clearInterval(state.jobPollTimer);
-                    onJobCompleted(job);
+                    if (onDone) {
+                        onDone(job);
+                    } else {
+                        onJobCompleted(job);
+                    }
                 } else if (job.status === "failed") {
                     clearInterval(state.jobPollTimer);
-                    updateProgressUI(100, `Failed: ${job.error_message || "Unknown error"}`);
-                    elements.btnRunSr.disabled = false;
+                    const errMsg = job.error_message || "Unknown error";
+                    updateProgressUI(100, `Failed: ${errMsg}`);
+                    setRunButtonsDisabled(false);
                     if (elements.btnRunUploadSr) elements.btnRunUploadSr.disabled = false;
+                    if (onDone) {
+                        onDone(null, new Error(errMsg));
+                    }
                 }
             } catch (e) {
                 console.error("Polling error:", e);
@@ -1032,8 +1138,14 @@
     // 9. Visual Overlay Rendering & Results Display
     // =========================================================================
     function onJobCompleted(job) {
+        if (state.jobResult && state.jobResult !== job.result) {
+            state.prevJobResult = state.jobResult;
+        }
         state.jobResult = job.result;
-        elements.btnRunSr.disabled = false;
+        state.diffShown = false;
+        if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        refreshPrevRunOption();
+        setRunButtonsDisabled(false);
         if (elements.btnRunUploadSr) elements.btnRunUploadSr.disabled = false;
 
         // Populate Result Details
@@ -1041,7 +1153,7 @@
         elements.resTime.textContent = `${job.result.processing_time_sec} s`;
         elements.resDevice.textContent = job.result.device_used.toUpperCase();
         if (elements.resModel) {
-            elements.resModel.textContent = job.result.model || (state.selectedModel === "swin2sr" ? "SEN2SR-Swin2SR" : "SEN2SR-Lite");
+            elements.resModel.textContent = job.result.model || displayNameForModel(state.selectedModel);
         }
         if (elements.resVram) {
             elements.resVram.textContent = job.result.peak_vram_mb ? `${job.result.peak_vram_mb} MB` : "N/A";
@@ -1097,10 +1209,154 @@
         updateSplitClipping();
     }
 
+    function sameBounds(a, b) {
+        return !!a && !!b && JSON.stringify(a) === JSON.stringify(b);
+    }
+
+    function refreshPrevRunOption() {
+        const opt = document.getElementById("opt-prev-layer");
+        const usable = !!(
+            state.prevJobResult &&
+            state.jobResult &&
+            state.prevJobResult.previews &&
+            sameBounds(state.prevJobResult.leaflet_bounds, state.jobResult.leaflet_bounds)
+        );
+        if (opt) {
+            opt.disabled = !usable;
+            opt.textContent = usable
+                ? `Previous: ${state.prevJobResult.model || "run"}`
+                : "Previous run";
+        }
+        if (elements.btnToggleDiff) {
+            elements.btnToggleDiff.disabled = !usable;
+            if (!usable && state.diffShown) {
+                hideDiffView();
+            }
+        }
+        if (!usable && state.leftCompareMode === "prev") {
+            state.leftCompareMode = "lr";
+            if (elements.selectLeftLayer) elements.selectLeftLayer.value = "lr";
+            if (state.jobResult && state.layers.left) {
+                state.layers.left.setUrl(getLayerUrl("lr", state.colorMode));
+            }
+        }
+        updateLabelTexts();
+    }
+
     function getLayerUrl(type, mode) {
+        if (type === "prev") {
+            if (!state.prevJobResult) return "";
+            const key = `sr_${mode}`;
+            return state.prevJobResult.previews[key] || "";
+        }
         if (!state.jobResult) return "";
         const key = `${type}_${mode}`;
         return state.jobResult.previews[key] || "";
+    }
+
+    // =========================================================================
+    // 8c. Amplified difference heatmap (previous run vs current, client-side)
+    // =========================================================================
+    // Approx inferno ramp stops: [pos, r, g, b]
+    const DIFF_RAMP = [
+        [0.0, 0, 0, 4], [0.13, 31, 12, 72], [0.25, 63, 23, 108],
+        [0.38, 95, 32, 120], [0.5, 129, 41, 107], [0.63, 165, 54, 82],
+        [0.75, 201, 73, 52], [0.88, 230, 107, 31], [1.0, 252, 255, 164],
+    ];
+
+    function rampColor(t) {
+        const x = Math.max(0, Math.min(1, t));
+        for (let i = 1; i < DIFF_RAMP.length; i++) {
+            if (x <= DIFF_RAMP[i][0]) {
+                const [p0, r0, g0, b0] = DIFF_RAMP[i - 1];
+                const [p1, r1, g1, b1] = DIFF_RAMP[i];
+                const f = (x - p0) / Math.max(1e-6, p1 - p0);
+                return [r0 + (r1 - r0) * f, g0 + (g1 - g0) * f, b0 + (b1 - b0) * f];
+            }
+        }
+        return DIFF_RAMP[DIFF_RAMP.length - 1].slice(1);
+    }
+
+    function loadPreviewImage(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error("Could not load preview image."));
+            img.src = url;
+        });
+    }
+
+    async function buildDiffDataURL(urlPrev, urlCurr) {
+        const [imgA, imgB] = await Promise.all([loadPreviewImage(urlPrev), loadPreviewImage(urlCurr)]);
+        const w = Math.min(imgA.naturalWidth || imgA.width, imgB.naturalWidth || imgB.width);
+        const h = Math.min(imgA.naturalHeight || imgA.height, imgB.naturalHeight || imgB.height);
+        if (!w || !h) throw new Error("Empty preview image.");
+        const read = (img) => {
+            const c = document.createElement("canvas");
+            c.width = w; c.height = h;
+            const ctx = c.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            return ctx.getImageData(0, 0, w, h).data;
+        };
+        const dA = read(imgA);
+        const dB = read(imgB);
+        const n = w * h;
+        const mag = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+            const o = i * 4;
+            mag[i] = (Math.abs(dA[o] - dB[o]) + Math.abs(dA[o + 1] - dB[o + 1]) + Math.abs(dA[o + 2] - dB[o + 2])) / (3 * 255);
+        }
+        const sorted = Array.from(mag).sort((a, b) => a - b);
+        const p99 = sorted[Math.floor(0.99 * (n - 1))] || 0;
+        const amp = 1 / Math.max(p99, 1e-6);
+        state.diffAmp = Math.round(amp);
+        const out = document.createElement("canvas");
+        out.width = w; out.height = h;
+        const octx = out.getContext("2d");
+        const outImg = octx.createImageData(w, h);
+        for (let i = 0; i < n; i++) {
+            const [r, g, b] = rampColor(Math.min(1, mag[i] * amp));
+            const o = i * 4;
+            outImg.data[o] = r; outImg.data[o + 1] = g; outImg.data[o + 2] = b; outImg.data[o + 3] = 255;
+        }
+        octx.putImageData(outImg, 0, 0);
+        return out.toDataURL("image/png");
+    }
+
+    async function toggleDiffView() {
+        const btn = elements.btnToggleDiff;
+        if (!btn || btn.disabled || state.compareRunning) return;
+        if (state.diffShown) {
+            hideDiffView();
+            return;
+        }
+        btn.disabled = true;
+        try {
+            const dataUrl = await buildDiffDataURL(
+                getLayerUrl("prev", state.colorMode),
+                getLayerUrl("sr", state.colorMode)
+            );
+            state.diffShown = true;
+            btn.classList.add("active");
+            if (state.layers.right) state.layers.right.setUrl(dataUrl);
+            updateLabelTexts();
+        } catch (err) {
+            if (elements.aoiDisplayStatus) {
+                elements.aoiDisplayStatus.textContent = `Diff view unavailable: ${err.message}`;
+            }
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function hideDiffView() {
+        state.diffShown = false;
+        if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        if (state.layers.right) {
+            state.layers.right.setUrl(getLayerUrl("sr", state.colorMode));
+        }
+        updateLabelTexts();
     }
 
     function clearOverlays() {
@@ -1279,12 +1535,23 @@
                 }
             });
         }
+
+        if (elements.btnToggleDiff) {
+            elements.btnToggleDiff.addEventListener("click", () => {
+                toggleDiffView();
+            });
+        }
     }
 
     function setColorMode(mode) {
         state.colorMode = mode;
         elements.btnModeRgb.classList.toggle("active", mode === "rgb");
         elements.btnModeCir.classList.toggle("active", mode === "cir");
+
+        if (state.diffShown) {
+            state.diffShown = false;
+            if (elements.btnToggleDiff) elements.btnToggleDiff.classList.remove("active");
+        }
 
         if (state.jobResult) {
             if (state.layers.left) {
@@ -1297,25 +1564,28 @@
         updateLabelTexts();
     }
 
+    function displayNameForModel(variant) {
+        if (variant === "swin2sr") return "SEN2SR-Swin2SR";
+        if (variant === "lite-ft") return "SEN2SR-Lite FT";
+        return "SEN2SR-Lite";
+    }
+
     function initModelSelector() {
         const radios = document.querySelectorAll('input[name="sr-model"]');
         radios.forEach((radio) => {
             radio.addEventListener("change", (e) => {
                 state.selectedModel = e.target.value;
-                const isSwin = state.selectedModel === "swin2sr";
 
                 const labelLite = document.getElementById("label-model-lite");
                 const labelSwin = document.getElementById("label-model-swin");
-                if (labelLite) labelLite.classList.toggle("active", !isSwin);
-                if (labelSwin) labelSwin.classList.toggle("active", isSwin);
+                const labelLiteFt = document.getElementById("label-model-liteft");
+                if (labelLite) labelLite.classList.toggle("active", state.selectedModel === "lite");
+                if (labelSwin) labelSwin.classList.toggle("active", state.selectedModel === "swin2sr");
+                if (labelLiteFt) labelLiteFt.classList.toggle("active", state.selectedModel === "lite-ft");
 
                 const explainer = document.getElementById("upscale-explainer-text");
                 if (explainer) {
-                    if (isSwin) {
-                        explainer.innerHTML = `<strong>SEN2SR-Swin2SR</strong> &bull; 10 m &rarr; 2.5 m`;
-                    } else {
-                        explainer.innerHTML = `<strong>SEN2SR-Lite</strong> &bull; 10 m &rarr; 2.5 m`;
-                    }
+                    explainer.innerHTML = `<strong>${displayNameForModel(state.selectedModel)}</strong> &bull; 10 m &rarr; 2.5 m`;
                 }
                 updateLabelTexts();
             });
@@ -1326,13 +1596,20 @@
         const modeLabel = state.colorMode === "rgb" ? "Natural" : "Infrared";
         if (state.leftCompareMode === "bicubic") {
             elements.labelLeftText.textContent = `Bicubic · 2.5 m · ${modeLabel}`;
+        } else if (state.leftCompareMode === "prev" && state.prevJobResult) {
+            const prevName = state.prevJobResult.model || "Previous";
+            elements.labelLeftText.textContent = `${prevName} · 2.5 m · ${modeLabel}`;
         } else {
             elements.labelLeftText.textContent = `Original · 10 m · ${modeLabel}`;
         }
         const modelName = (state.jobResult && state.jobResult.model)
             ? state.jobResult.model
-            : (state.selectedModel === "swin2sr" ? "SEN2SR-Swin2SR" : "SEN2SR-Lite");
-        elements.labelRightText.textContent = `${modelName} · 2.5 m · ${modeLabel}`;
+            : displayNameForModel(state.selectedModel);
+        if (state.diffShown) {
+            elements.labelRightText.textContent = `Amplified Δ ×${state.diffAmp} · FT vs prev`;
+        } else {
+            elements.labelRightText.textContent = `${modelName} · 2.5 m · ${modeLabel}`;
+        }
     }
 
     // =========================================================================
@@ -1350,6 +1627,7 @@
         initDemo();
         initModelSelector();
         initSrExecution();
+        initCompare();
         initSliderAndModes();
 
         if (state.map) {

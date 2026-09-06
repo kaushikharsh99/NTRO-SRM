@@ -113,7 +113,7 @@ def get_demo_info(request: Request) -> dict:
 async def upload_geotiff_patch(
     request: Request,
     file: UploadFile = File(...),
-    model: str = Query(default="lite", description="Model variant: 'lite' or 'swin2sr'"),
+    model: str = Query(default="lite", description="Model variant: 'lite', 'lite-ft' or 'swin2sr'"),
     run_analysis: bool = Query(default=True, description="Run quality assessment and thematic products"),
     run_wald_validation: bool = Query(default=False, description="Run Wald's synthesis validation"),
     uncertainty_members: Optional[int] = Query(

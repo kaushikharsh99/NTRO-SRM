@@ -119,7 +119,7 @@ class InferenceRequest(BaseModel):
     is_demo: bool = Field(default=False, description="Whether to run on local demo scene")
     overlap: int = Field(default=32, ge=8, le=64, description="Sliding window overlap in pixels")
     clamp_output: bool = Field(default=True, description="Clamp reflectance to [0.0, 1.0]")
-    model: str = Field(default="lite", description="Model variant: 'lite' or 'swin2sr'")
+    model: str = Field(default="lite", description="Model variant: 'lite', 'lite-ft' or 'swin2sr'")
     run_analysis: bool = Field(
         default=True,
         description="Run quality assessment, uncertainty estimation and thematic products",

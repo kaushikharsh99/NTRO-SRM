@@ -85,6 +85,39 @@ def test_wald_sample_shapes_without_external_data(tmp_path: Path) -> None:
     assert torch.isfinite(sample.lr).all() and torch.isfinite(sample.hr).all()
 
 
+def test_real_full_scene_is_tiled_into_fixed_batches(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.tif"
+    reference_path = tmp_path / "reference.tif"
+    manifest_path = tmp_path / "manifest.csv"
+    rng = np.random.default_rng(8)
+    # 70x64 LR window -> 3x2 grid of 32px tiles (edge-clamped)
+    _write_raster(source_path, rng.uniform(0.05, 0.8, (10, 70, 64)), S2_10BAND_NAMES)
+    _write_raster(
+        reference_path,
+        rng.uniform(0.05, 0.8, (4, 280, 256)),
+        ["B04", "B03", "B02", "B08"],
+    )
+    _write_manifest(
+        manifest_path,
+        {
+            "pair_id": "real-1", "site_id": "site-b", "split": "train",
+            "pair_type": "real_paired", "s2_path": source_path,
+            "hr_path": reference_path, "tile_y": 0, "tile_x": 0,
+            "lr_h": 70, "lr_w": 64, "common_bands": "B02,B03,B04,B08",
+        },
+    )
+
+    ds = PairedS2Dataset(manifest_path, split="train")
+    assert len(ds) == 3 * 2
+    for sample in ds:
+        assert sample.lr.shape == (10, 32, 32)
+        assert sample.hr.shape == (10, 128, 128)
+        assert sample.band_mask.sum().item() == 4.0
+
+    with pytest.raises(ValueError, match="No pairs"):
+        PairedS2Dataset(manifest_path, split="train", pair_types=("wald_synthetic",))
+
+
 def test_real_sample_supervises_common_bands_without_external_data(tmp_path: Path) -> None:
     source_path = tmp_path / "source.tif"
     reference_path = tmp_path / "reference.tif"
