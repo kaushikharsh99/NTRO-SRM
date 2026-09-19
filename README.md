@@ -93,19 +93,18 @@ Open **`http://127.0.0.1:8000`** in your browser.
 
 ---
 
-## Model Benchmark & Hardware Profiling
+## Inference Performance
 
-Evaluated on the Mountain Lake Sentinel-2 L2A scene (`datasets/sample_s2/sample_s2_l2a.tif`, $256 \times 256$ pixels at 10m GSD $\to$ $1024 \times 1024$ pixels at 2.5m GSD) on an **NVIDIA GeForce RTX 3050 6GB Laptop GPU**:
+The optimized tiler batches spatial patches, removes duplicate edge tiles, and blends
+overlaps without hard seams. On the bundled $256\times256$ Sentinel-2 scene:
 
-| Metric | SEN2SR-Lite (Default) | SEN2SR-Swin2SR (Higher-Capacity) |
-| :--- | :--- | :--- |
-| **Architecture** | Swift Parameter-free Attention CNN | Swin2SR Vision Transformer + MambaSR |
-| **Parameter Count** | **~0.47 Million** | **~12.9 Million** ($27.4\times$ capacity) |
-| **Input $\to$ Output Grid** | $256\times 256 \to 1024\times 1024$ (16 tiles) | $256\times 256 \to 1024\times 1024$ (16 tiles) |
-| **Spectral Channels** | 10 Bands (`B02`..`B12`) | 10 Bands (`B02`..`B12`) |
-| **Peak GPU VRAM** | **310.4 MB** | **2,461.0 MB** (~2.46 GB) |
-| **Inference Runtime** | **2.25 seconds** | **720.80 seconds** (~12.0 min, pure PyTorch scan) |
-| **Target Application** | Fast screening, interactive web panning | Complex infrastructure, dense edge reconstruction |
+| Device | Legacy path | Optimized batch=4 | Speedup |
+| :--- | ---: | ---: | ---: |
+| Apple GPU (MPS) | 808.6 ms | 351.5 ms | **2.30×** |
+| CPU | 4519.9 ms | 2029.4 ms | **2.23×** |
+
+See [MPS](benchmarks/inference_mps.md) and [CPU](benchmarks/inference_cpu.md)
+benchmark receipts. Use `--legacy-tiling` for the upstream ablation path.
 
 ---
 
@@ -216,10 +215,12 @@ NTRO-SRM/
 │   ├── cache/                # Cached streaming tiles from STAC
 │   └── sample_s2/            # Pre-downloaded sample Sentinel-2 scene (455 KB)
 ├── outputs/
-│   ├── comparisons/          # Benchmark visual comparisons and triptychs
+│   ├── comparisons/          # Visual comparison previews
 │   └── web_jobs/             # Asynchronous web job outputs & GeoTIFFs
 ├── scripts/
-│   ├── compare_models.py     # Evaluation & triptych generator
+│   ├── benchmark_inference.py # Legacy versus optimized tiling benchmark
+│   ├── compare_ft.py         # Lite versus project-tuned comparison
+│   ├── compare_models.py     # Baseline model visual comparison
 │   ├── download_checkpoints.py # Pretrained weights downloader
 │   ├── run_web.py            # Web application launcher
 │   └── sr_sentinel2.py       # Command-line interface (CLI)

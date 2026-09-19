@@ -64,8 +64,8 @@ Click **"UPSCALE PATCH TO 2.5m"**. The application tracks:
 Once inference completes, Leaflet map overlays are dynamically rendered:
 - **Swipe Split View (Default):** Drag the horizontal slider left/right to compare native $10\text{m}$ input against $2.5\text{m}$ super-resolved output.
 - **Side Selection:** Switch the left comparison pane between **Native 10m S2** and **Bicubic 2.5m Baseline**.
-- **Cross-Model Compare:** Click **Compare Lite vs FT** to run both models on the same area back-to-back; the swipe then shows Lite vs FT automatically. Any previous same-area run can also be picked from the **Left** dropdown as **Previous: MODEL**.
-- **Difference Heatmap:** With a previous run active, click **Diff** to overlay an amplified FT-vs-previous heatmap (99th-percentile saturated; the factor is shown in the label, e.g. `Amplified Δ ×66`). Bright means the fine-tune changed the reconstruction there — typically edges and boundaries.
+- **Cross-Model Compare:** Click **Compare Lite vs FT** to run both models on the same area back-to-back; the swipe then shows Lite vs FT automatically. Any previous same-area run can also be selected from the **Left** dropdown.
+- **Difference Heatmap:** With a previous run active, click **Diff** to show the amplified change between model outputs. Bright regions indicate where the fine-tuned reconstruction changed most.
 - **Continuous Opacity Blend:** Switch to **Blend** mode and adjust the opacity slider from 0% to 100%.
 - **Single Layer Mode:** Toggle **10m Native Only** or **2.5m SR Only**.
 
@@ -106,8 +106,18 @@ python scripts/sr_sentinel2.py \
   --output <path_to_output_geotiff> \
   [--model {lite,swin2sr}] \
   [--device {cuda,mps,cpu}] \
-  [--overlap OVERLAP_PIXELS]
+  [--overlap OVERLAP_PIXELS] \
+  [--tile-size 128] [--batch-size 4] [--blend {linear,hann,average}] \
+  [--amp] [--legacy-tiling] [--receipt]
 ```
+
+Tiling defaults (`--tile-size 128 --overlap 32`) match the upstream grid;
+`--batch-size 4 --blend linear` enables batched weighted-blend inference
+(~2.2x faster on CPU and ~2.3x on Apple MPS than the legacy single-tile
+hard-crop path on the 256x256 sample scene; see `benchmarks/`). `--receipt` writes
+a JSON reproducibility receipt (`<output>.receipt.json`) with model, device,
+tiling config, shapes, timing, torch version, and git commit. `--legacy-tiling`
+reproduces the upstream path for ablations.
 
 ### CLI Examples
 
@@ -148,18 +158,12 @@ python scripts/sr_sentinel2.py \
   --device mps
 ```
 
-#### Example 5: Run Dual Model Benchmark Script
+#### Example 5: Compare the Available Models
 ```bash
 python scripts/compare_models.py
-```
-This generates side-by-side triptych comparisons saved in `outputs/comparisons/`.
-
-#### Example 6: Compare Base Lite vs Best (Distilled) Weights
-```bash
 python scripts/compare_ft.py --input datasets/sample_s2/sample_s2_l2a.tif
-# Compare against the older Wald/NAIP fine-tune instead:
-python scripts/compare_ft.py --checkpoint outputs/finetune/lite_ft_best.pt
 ```
+These commands generate repeatable model-comparison figures in `outputs/comparisons/`.
 
 ---
 

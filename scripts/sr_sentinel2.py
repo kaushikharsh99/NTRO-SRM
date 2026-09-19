@@ -78,6 +78,40 @@ def parse_args() -> argparse.Namespace:
         default=32,
         help="Sliding window tile overlap (pixels) for large images.",
     )
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=128,
+        help="LR tile edge for tiled inference (model-native 128).",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Tiles per forward pass (batched inference).",
+    )
+    parser.add_argument(
+        "--blend",
+        type=str,
+        default="linear",
+        choices=["linear", "hann", "average"],
+        help="Overlap blending strategy.",
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+        help="Enable autocast mixed precision (CUDA float16 / CPU bfloat16).",
+    )
+    parser.add_argument(
+        "--legacy-tiling",
+        action="store_true",
+        help="Use upstream single-tile hard-crop tiling (ablation only).",
+    )
+    parser.add_argument(
+        "--receipt",
+        action="store_true",
+        help="Write a JSON reproducibility receipt next to the output GeoTIFF.",
+    )
     return parser.parse_args()
 
 
@@ -155,6 +189,7 @@ def main() -> int:
     print(f"  Normalization:   mode='{args.norm_mode}' (scale factor: 1/10000)")
     print("  Resampling:      Explicit bilinear resampling for 20m bands -> 10m grid")
     print(f"  Tiling Overlap:  {args.overlap} px")
+    print(f"  Tile Size:       {args.tile_size} px | Batch: {args.batch_size} | Blend: {args.blend} | AMP: {args.amp}")
 
     try:
         result: Sentinel2SRResult = pipeline.predict(
@@ -162,6 +197,12 @@ def main() -> int:
             output_path=output_path,
             normalization_mode=args.norm_mode,
             overlap=args.overlap,
+            tile_size=args.tile_size,
+            batch_size=args.batch_size,
+            blend_mode=args.blend,
+            use_amp=args.amp,
+            use_legacy_tiling=args.legacy_tiling,
+            save_receipt=args.receipt,
         )
     except Exception as err:
         print(f"[ERROR] Pipeline execution failed: {err}")
