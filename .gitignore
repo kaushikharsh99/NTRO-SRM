@@ -69,5 +69,6 @@ datasets/distill_cache/*
 
 # Temporary artifacts (except sample dataset)
 temp/
+logs/
 *.cog
 outputs/**/*.tif
