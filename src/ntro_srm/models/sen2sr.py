@@ -36,6 +36,7 @@ from ntro_srm.preprocessing.transforms import (
     handle_nans,
     normalize_reflectance,
 )
+from ntro_srm.utils.device import empty_device_cache, select_device
 
 # Hugging Face STAC metadata URLs for pretrained weights
 DEFAULT_HF_SEN2SRLITE_URL = (
@@ -54,9 +55,10 @@ class SEN2SRModel(nn.Module):
 
     Supported Variants:
         - "lite": Fast CNN-based Swift Parameter-free Attention Network (SPAN),
-          suitable for CPU and CUDA GPU execution (~0.47M parameters).
+          suitable for CPU, CUDA, and Apple MPS execution (~0.47M parameters).
         - "swin2sr": Vision Transformer + MambaSR high-capacity architecture
-          (~12.9M parameters), running with chunked selective scan on CUDA.
+          (~12.9M parameters), running with chunked selective scan on CUDA,
+          Apple MPS, or CPU.
 
     Expected Input Specification:
         - Shape: (B, 10, H, W) or (10, H, W)
@@ -91,7 +93,8 @@ class SEN2SRModel(nn.Module):
         model_variant : str, default="lite"
             Model architecture variant ("lite" or "swin2sr" / "swin").
         device : str or torch.device, optional
-            Computation device ("cuda" or "cpu"). If None, uses CUDA if available.
+            Computation device ("cuda", "mps", or "cpu"). If omitted, selects
+            CUDA, then Apple MPS, then CPU.
         checkpoint_dir : str or Path, optional
             Path to directory containing downloaded checkpoint safetensors and mlm.json.
             If None, defaults to `checkpoints/SEN2SRLite` or `checkpoints/SEN2SR`.
@@ -117,11 +120,7 @@ class SEN2SRModel(nn.Module):
                 f"Supported variants: 'lite' (SEN2SR-Lite), 'swin2sr' (SEN2SR-Swin2SR)."
             )
 
-        # Determine compute device
-        if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(device)
+        self.device = select_device(device)
 
         # Resolve checkpoint path
         if checkpoint_dir is None:
@@ -133,23 +132,58 @@ class SEN2SRModel(nn.Module):
 
         # Load or download pretrained model
         self.model = self._load_model(auto_download=auto_download)
+        self._materialize_inference_tensors(preserve_parameters=False)
         self.model.to(self.device)
+        self._move_upstream_runtime_tensors()
         self.set_trainable(trainable)
+
+    def _move_upstream_runtime_tensors(self) -> None:
+        """Move SEN2SR tensor attributes that upstream did not register as buffers.
+
+        SEN2SR's Fourier hard constraint stores each low-pass mask as a plain
+        attribute. ``Module.to`` therefore leaves those masks on CPU, which causes
+        a device mismatch during MPS inference. This also installs the
+        vectorized FFT forward and precomputes complementary high-pass masks
+        (see ``ntro_srm.models.fourier_filters``); upstream files are untouched.
+        """
+        for module in self.model.modules():
+            low_pass_mask = getattr(module, "low_pass_mask", None)
+            if isinstance(low_pass_mask, torch.Tensor):
+                module.low_pass_mask = low_pass_mask.to(self.device)
+        try:
+            from ntro_srm.models.fourier_filters import optimize_upstream_masks
+
+            optimize_upstream_masks(self.model, self.device)
+        except Exception:
+            pass
+
+    def _materialize_inference_tensors(self, *, preserve_parameters: bool) -> None:
+        """Copy MLSTAC inference tensors into ordinary autograd tensors."""
+        for module in self.model.modules():
+            for name, parameter in list(module.named_parameters(recurse=False)):
+                if parameter.is_inference():
+                    if preserve_parameters:
+                        # Keep optimizer references valid after an upstream
+                        # evaluation layer refreshes fused parameter data.
+                        parameter.data = parameter.detach().clone()
+                    else:
+                        setattr(
+                            module,
+                            name,
+                            nn.Parameter(
+                                parameter.detach().clone(),
+                                requires_grad=parameter.requires_grad,
+                            ),
+                        )
+            for name, buffer in list(module.named_buffers(recurse=False)):
+                if buffer is not None and buffer.is_inference():
+                    module._buffers[name] = buffer.detach().clone()
 
     def set_trainable(self, trainable: bool) -> None:
         """Switch backbone parameter gradients and training mode explicitly."""
-        if trainable:
-            # MLSTAC may construct checkpoint tensors inside torch.inference_mode().
-            # Such tensors cannot later enable autograd, so materialize ordinary
-            # Parameter/buffer copies before fine-tuning.
-            for module in self.model.modules():
-                for name, parameter in list(module.named_parameters(recurse=False)):
-                    if parameter.is_inference():
-                        replacement = nn.Parameter(parameter.detach().clone(), requires_grad=True)
-                        setattr(module, name, replacement)
-                for name, buffer in list(module.named_buffers(recurse=False)):
-                    if buffer is not None and buffer.is_inference():
-                        module._buffers[name] = buffer.detach().clone()
+        # Some upstream evaluation layers refresh fused weights during an
+        # inference-mode forward. Convert those tensors in place as well.
+        self._materialize_inference_tensors(preserve_parameters=True)
         for parameter in self.model.parameters():
             parameter.requires_grad = trainable
         self.model.train(mode=trainable)
@@ -176,6 +210,8 @@ class SEN2SRModel(nn.Module):
                     f"Checkpoint not found at {self.checkpoint_dir} and auto_download=False."
                 )
 
+        # MLSTAC currently accepts CPU/CUDA at construction time. MPS models are
+        # materialized on CPU first, then moved to Metal by this adapter.
         device_str = "cuda" if self.device.type == "cuda" else "cpu"
         stac_item = mlstac.load(str(self.checkpoint_dir))
         return stac_item.compiled_model(device=device_str)
@@ -204,15 +240,35 @@ class SEN2SRModel(nn.Module):
         auto_normalize: bool = False,
         clamp_output: bool = True,
         overlap: int = 32,
+        tile_size: int = 128,
+        batch_size: int = 4,
+        blend_mode: str = "linear",
+        use_amp: bool = False,
+        amp_dtype: Optional[str] = None,
+        use_legacy_tiling: bool = False,
+        empty_cache: bool = False,
     ) -> torch.Tensor:
         """High-level prediction interface with tensor sanitization and validation.
 
         Automatically handles:
         - 3D (10, H, W) and 4D (B, 10, H, W) tensors.
-        - Arbitrary spatial sizes (padding small patches < 128, and tiling large tiles > 128).
+        - Arbitrary spatial sizes (padding small patches < tile_size, and tiling large tiles > tile_size).
         - NaN / Inf sanitization.
         - Band count validation (strictly 10 bands).
         - Optional reflectance auto-normalization.
+
+        Inference optimizations (default path):
+        - Batched tile forward passes (``batch_size`` tiles per forward instead
+          of one), with accumulation on CPU to bound VRAM.
+        - Weighted overlap blending (``blend_mode="linear"`` partition-of-unity
+          ramps, ``"hann"`` cosine, or ``"average"``) instead of hard overlap
+          cropping, removing seam discontinuities.
+        - Independent per-axis tiling so rectangular scenes are covered exactly
+          with no square-padding waste and no duplicate tiles.
+        - Optional autocast mixed precision (``use_amp=True``, CUDA float16 /
+          CPU bfloat16; MPS stays in float32).
+        - Cached vectorized Fourier masks with an efficient ``fft2`` hard
+          constraint (installed at init; see ``fourier_filters``).
 
         Parameters
         ----------
@@ -226,7 +282,21 @@ class SEN2SRModel(nn.Module):
         clamp_output : bool, default=True
             If True, clamps negative values in the super-resolved output to 0.0.
         overlap : int, default=32
-            Overlap in pixels when processing large tiles (> 128x128).
+            Overlap in pixels when processing large tiles (> tile_size).
+        tile_size : int, default=128
+            LR tile edge for tiled inference (model-native 128).
+        batch_size : int, default=4
+            Tiles per forward pass in the optimized tiler.
+        blend_mode : {"linear", "hann", "average"}, default="linear"
+            Overlap blending strategy ("average" divides by coverage).
+        use_amp : bool, default=False
+            Enable autocast mixed precision (CUDA/CPU; MPS is a no-op).
+        amp_dtype : str, optional
+            Explicit autocast dtype ("float16"/"bfloat16"); auto-selected if None.
+        use_legacy_tiling : bool, default=False
+            Reproduce the upstream single-tile hard-crop path for ablations.
+        empty_cache : bool, default=False
+            Release cached accelerator memory after inference.
 
         Returns
         -------
@@ -271,11 +341,73 @@ class SEN2SRModel(nn.Module):
         orig_device = lr.device
         lr = lr.to(self.device)
 
-        batch_size, channels, in_h, in_w = lr.shape
+        n_batch, channels, in_h, in_w = lr.shape
+        tile = int(tile_size)
+        if tile <= 0:
+            raise ValueError("tile_size must be positive")
+        if not 0 <= int(overlap) < tile:
+            raise ValueError("overlap must satisfy 0 <= overlap < tile_size")
+        if int(batch_size) <= 0:
+            raise ValueError("batch_size must be positive")
+        if blend_mode not in ("linear", "hann", "average"):
+            raise ValueError(f"Unknown blend_mode '{blend_mode}'")
 
-        # Handle spatial dimensions (square & non-square, arbitrary sizes)
-        # Upstream sen2sr.predict_large requires square inputs matching stride grid: 128 + n * (128 - overlap)
-        step = max(1, 128 - overlap)
+        if use_legacy_tiling:
+            sr = self._predict_legacy(lr, overlap=overlap)
+        elif in_h <= tile and in_w <= tile:
+            # Small patch: replicate-pad to the native tile, forward once, crop.
+            pad_h = tile - in_h
+            pad_w = tile - in_w
+            if pad_h > 0 or pad_w > 0:
+                lr_padded = F.pad(lr, (0, pad_w, 0, pad_h), mode="replicate")
+            else:
+                lr_padded = lr
+            from ntro_srm.inference.tiled import autocast_context as _amp_ctx
+
+            with _amp_ctx(self.device, use_amp, amp_dtype):
+                sr_padded = self.forward(lr_padded)
+            sr = sr_padded[:, :, : in_h * 4, : in_w * 4]
+            del sr_padded
+        else:
+            # Large / rectangular scene: batched weighted blending, no square padding.
+            from ntro_srm.inference.tiled import TiledInferenceConfig, tiled_predict
+
+            cfg = TiledInferenceConfig(
+                tile_size=tile,
+                overlap=int(overlap),
+                batch_size=int(batch_size),
+                blend_mode=blend_mode,
+                scale_factor=4,
+                use_amp=bool(use_amp),
+                amp_dtype=amp_dtype,
+                empty_cache_at_end=False,
+            )
+            sr = tiled_predict(self.model, lr, cfg, device=self.device)
+
+        # Post-processing
+        if clamp_output:
+            sr = clamp_non_negative(sr, min_value=0.0)
+
+        sr = sr.to(orig_device)
+        if empty_cache:
+            try:
+                empty_device_cache(self.device)
+            except Exception:
+                pass
+        if is_3d:
+            sr = sr.squeeze(0)
+
+        return sr
+
+    def _predict_legacy(self, lr: torch.Tensor, overlap: int = 32) -> torch.Tensor:
+        """Upstream-compatible single-tile hard-crop path (ablation only).
+
+        Preserves the original square-padding + per-sample
+        ``sen2sr.predict_large`` behaviour, including its rectangular-scene
+        limitations, for benchmark comparisons.
+        """
+        n_batch, _, in_h, in_w = lr.shape
+        step = max(1, 128 - int(overlap))
         max_side = max(in_h, in_w)
         if max_side <= 128:
             target_dim = 128
@@ -285,9 +417,7 @@ class SEN2SRModel(nn.Module):
 
         pad_h = target_dim - in_h
         pad_w = target_dim - in_w
-        needs_padding = (pad_h > 0) or (pad_w > 0)
-
-        if needs_padding:
+        if pad_h > 0 or pad_w > 0:
             lr_padded = F.pad(lr, (0, pad_w, 0, pad_h), mode="replicate")
         else:
             lr_padded = lr
@@ -296,27 +426,16 @@ class SEN2SRModel(nn.Module):
             sr_padded = self.forward(lr_padded)
         else:
             sr_batches = []
-            for b in range(batch_size):
-                sample_lr = lr_padded[b]  # (10, target_dim, target_dim)
+            for b in range(n_batch):
+                sample_lr = lr_padded[b]
                 sr_sample = sen2sr.predict_large(
                     X=sample_lr,
                     model=self.model,
-                    overlap=overlap,
+                    overlap=int(overlap),
                 )
                 sr_batches.append(sr_sample)
             sr_padded = torch.stack(sr_batches, dim=0).to(self.device)
 
-        if needs_padding:
-            sr = sr_padded[:, :, : in_h * 4, : in_w * 4]
-        else:
-            sr = sr_padded
-
-        # Post-processing
-        if clamp_output:
-            sr = clamp_non_negative(sr, min_value=0.0)
-
-        sr = sr.to(orig_device)
-        if is_3d:
-            sr = sr.squeeze(0)
-
-        return sr
+        if pad_h > 0 or pad_w > 0:
+            return sr_padded[:, :, : in_h * 4, : in_w * 4]
+        return sr_padded

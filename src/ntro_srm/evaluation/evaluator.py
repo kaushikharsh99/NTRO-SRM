@@ -14,7 +14,7 @@ from rasterio.enums import Resampling
 from rasterio.warp import reproject
 import torch
 
-from ntro_srm.evaluation.metrics import evaluate_arrays
+from ntro_srm.evaluation.geotiff_metrics import evaluate_arrays
 from ntro_srm.preprocessing.sentinel2 import normalize_sentinel2_l2a
 from ntro_srm.data.sentinel2 import S2_12BAND_ORDER
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
@@ -90,9 +90,14 @@ def _summary(path: Path) -> RasterSummary:
         )
 
 
-def _normalise(data: np.ndarray) -> np.ndarray:
+def _normalise(data: np.ndarray, scale: float) -> np.ndarray:
+    if scale <= 0:
+        raise ValueError("normalization scales must be positive")
     return normalize_sentinel2_l2a(
-        torch.from_numpy(data), mode="auto", nodata_value=None
+        torch.from_numpy(data),
+        mode="s2_10000",
+        scale_factor=scale,
+        nodata_value=None,
     ).numpy().astype(np.float64)
 
 
@@ -104,6 +109,7 @@ def _read_selected_on_grid(
     target_transform,
     target_shape: tuple[int, int],
     resampling: Resampling,
+    normalization_scale: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     with rasterio.open(path) as dataset:
         if dataset.crs is None or target_crs is None:
@@ -132,7 +138,7 @@ def _read_selected_on_grid(
             )
             output[output_index] = destination
             valid &= np.isfinite(destination)
-        return _normalise(output), valid
+        return _normalise(output, normalization_scale), valid
 
 
 def _common_bands(first: RasterSummary, second: RasterSummary) -> list[str]:
@@ -155,12 +161,17 @@ def evaluate_geotiffs(
     source_path: str | Path | None = None,
     reference_path: str | Path | None = None,
     scale_factor: float = 4.0,
+    prediction_scale: float = 1.0,
+    source_scale: float = 10000.0,
+    reference_scale: float = 1.0,
 ) -> EvaluationReport:
     """Evaluate an SR GeoTIFF against its LR source and/or an HR reference.
 
     Reference imagery is bilinearly aligned to the prediction grid. For source
     consistency, the prediction is area-averaged back to the source grid before
-    metrics are calculated.
+    metrics are calculated. Radiometric scales are explicit divisors: model
+    predictions and references default to normalized values, while the
+    Sentinel-2 source defaults to its 10,000 quantification scale.
     """
     prediction_file = Path(prediction_path)
     prediction_summary = _summary(prediction_file)
@@ -192,10 +203,18 @@ def evaluate_geotiffs(
                 "target_shape": (source_dataset.height, source_dataset.width),
             }
         source, source_valid = _read_selected_on_grid(
-            source_file, common, resampling=Resampling.bilinear, **grid
+            source_file,
+            common,
+            resampling=Resampling.bilinear,
+            normalization_scale=source_scale,
+            **grid,
         )
         downsampled, prediction_valid = _read_selected_on_grid(
-            prediction_file, common, resampling=Resampling.average, **grid
+            prediction_file,
+            common,
+            resampling=Resampling.average,
+            normalization_scale=prediction_scale,
+            **grid,
         )
         source_metrics = evaluate_arrays(
             downsampled,
@@ -225,10 +244,18 @@ def evaluate_geotiffs(
                 "target_shape": (prediction_dataset.height, prediction_dataset.width),
             }
         prediction, prediction_valid = _read_selected_on_grid(
-            prediction_file, common, resampling=Resampling.bilinear, **grid
+            prediction_file,
+            common,
+            resampling=Resampling.bilinear,
+            normalization_scale=prediction_scale,
+            **grid,
         )
         reference, reference_valid = _read_selected_on_grid(
-            reference_file, common, resampling=Resampling.bilinear, **grid
+            reference_file,
+            common,
+            resampling=Resampling.bilinear,
+            normalization_scale=reference_scale,
+            **grid,
         )
         reference_metrics = evaluate_arrays(
             prediction,

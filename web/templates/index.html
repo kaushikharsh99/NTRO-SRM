@@ -10,7 +10,7 @@
     <script src="/static/vendor/leaflet/leaflet.js"></script>
     
     <!-- Application Styling -->
-    <link rel="stylesheet" href="/static/css/app.css?v=5.0">
+    <link rel="stylesheet" href="/static/css/app.css?v=6.3">
 </head>
 <body>
     <div class="app-container">
@@ -33,7 +33,7 @@
             <div class="header-center">
                 <!-- Hardware & Pipeline Status Chips -->
                 <div class="status-chip">
-                    <span class="status-indicator {% if sys_info.cuda_available %}indicator-active{% else %}indicator-warn{% endif %}"></span>
+                    <span class="status-indicator {% if sys_info.accelerator_active %}indicator-active{% else %}indicator-warn{% endif %}"></span>
                     <span class="chip-val">{{ sys_info.device_name }}</span>
                 </div>
 
@@ -122,13 +122,54 @@
                         <select id="select-left-layer" class="select-sm">
                             <option value="lr" selected>Original</option>
                             <option value="bicubic">Bicubic</option>
+                            <option value="prev" id="opt-prev-layer" disabled>Previous run</option>
                         </select>
                         <button id="btn-zoom-patch" class="btn-toggle btn-icon-text" title="Center map directly onto the loaded patch">
                             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
                             Fit
                         </button>
+                        <button id="btn-toggle-diff" class="btn-toggle btn-icon-text" disabled title="Show amplified FT-vs-previous difference heatmap">
+                            Diff
+                        </button>
                     </div>
                 </div>
+
+                <!-- Compact scientific read-out; populated after every completed run. -->
+                <section id="validation-dock" class="validation-dock hidden" aria-live="polite">
+                    <div class="validation-dock-head">
+                        <div>
+                            <div class="validation-eyebrow">Validation</div>
+                            <div class="validation-title-row">
+                                <span id="validation-verdict" class="validation-verdict">Report ready</span>
+                                <span id="validation-scope" class="validation-scope">Wald · 40 m → 10 m</span>
+                            </div>
+                        </div>
+                        <button id="btn-open-report" class="validation-report-button" type="button">Full report</button>
+                    </div>
+                    <div id="comparison-summary" class="comparison-summary hidden"></div>
+                    <div id="validation-metrics" class="validation-metrics"></div>
+                    <div class="validation-foot">
+                        <div class="density-readout" title="Grid samples per square kilometre. This is raster sampling density, not new observed information.">
+                            <span class="density-value">16×</span>
+                            <span>grid sampling<br><b>10k → 160k px/km²</b></span>
+                        </div>
+                        <div id="analysis-layer-switcher" class="analysis-layer-switcher" aria-label="Result overlay">
+                            <button type="button" class="analysis-layer-btn active" data-layer="rgb">Image</button>
+                            <button type="button" class="analysis-layer-btn" data-layer="confidence">Confidence</button>
+                            <button type="button" class="analysis-layer-btn" data-layer="novelty">Added detail</button>
+                            <button type="button" class="analysis-layer-btn" data-layer="ndvi">NDVI</button>
+                        </div>
+                    </div>
+                    <button id="btn-inspect-center" class="validation-hint" type="button">Click the image to inspect a pixel · or inspect the center</button>
+                </section>
+
+                <aside id="pixel-inspector" class="pixel-inspector hidden" aria-live="polite">
+                    <button id="btn-close-pixel" class="pixel-close" type="button" aria-label="Close pixel inspector">×</button>
+                    <div class="validation-eyebrow">Pixel inspector</div>
+                    <div id="pixel-coordinate" class="pixel-coordinate">—</div>
+                    <div id="pixel-summary" class="pixel-summary"></div>
+                    <div id="pixel-spectrum" class="pixel-spectrum"></div>
+                </aside>
 
                 <!-- Bottom Status Bar for Mouse Coords -->
                 <div class="map-status-bar">
@@ -397,6 +438,19 @@
                                     </div>
                                 </div>
                             </label>
+
+                            <label class="model-option-card" for="model-radio-liteft" id="label-model-liteft">
+                                <input type="radio" name="sr-model" id="model-radio-liteft" value="lite-ft">
+                                <div class="model-option-content">
+                                    <div class="model-name-row">
+                                        <span class="model-title">SEN2SR-Lite FT</span>
+                                        <span class="model-meta">Tuned</span>
+                                    </div>
+                                    <div class="model-desc">
+                                        Wald fine-tuned Lite
+                                    </div>
+                                </div>
+                            </label>
                         </div>
                     </div>
                 </div>
@@ -405,6 +459,9 @@
                 <div class="upscale-action-card" id="upscale-action-card">
                     <button id="btn-run-sr" type="button" class="btn btn-accent btn-block btn-lg" disabled>
                         <span>Process area</span>
+                    </button>
+                    <button id="btn-compare-models" type="button" class="btn btn-secondary btn-block" disabled title="Run Lite and Lite-FT on this area, then swipe between them">
+                        <span>Compare Lite vs FT</span>
                     </button>
                     <div class="upscale-explainer">
                         <span id="upscale-explainer-text"><strong>SEN2SR-Lite</strong> &bull; 10 m &rarr; 2.5 m</span>
@@ -499,6 +556,14 @@
                                     Infrared preview
                                 </a>
                             </div>
+                            <div class="download-subrow">
+                                <a id="btn-download-report" class="btn btn-secondary btn-sm flex-1" href="#" download>
+                                    Validation JSON
+                                </a>
+                                <a id="btn-download-report-md" class="btn btn-secondary btn-sm flex-1" href="#" download>
+                                    Report .md
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -506,7 +571,22 @@
         </main>
     </div>
 
+    <div id="validation-modal" class="validation-modal hidden" role="dialog" aria-modal="true" aria-labelledby="validation-modal-title">
+        <div class="validation-modal-backdrop" data-close-report="true"></div>
+        <article class="validation-report-sheet">
+            <header class="report-sheet-head">
+                <div>
+                    <div class="validation-eyebrow">Scientific quality assessment</div>
+                    <h2 id="validation-modal-title">Validation report</h2>
+                    <p id="validation-modal-subtitle">Wald synthesis and source-consistency results</p>
+                </div>
+                <button id="btn-close-report" class="report-close" type="button" aria-label="Close report">×</button>
+            </header>
+            <div id="validation-report-content" class="validation-report-content"></div>
+        </article>
+    </div>
+
     <!-- Application JavaScript Bundle -->
-    <script src="/static/js/app.js?v=4.0"></script>
+    <script src="/static/js/app.js?v=5.5"></script>
 </body>
 </html>

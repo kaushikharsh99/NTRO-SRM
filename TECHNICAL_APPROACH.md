@@ -7,6 +7,48 @@ working grid to a 2.5 m multispectral product. The system is designed to improve
 spatial detail while constraining spectral drift and preserving the source CRS,
 bounds, band identities, and reflectance scale.
 
+## Inference optimization (SIH Round-2)
+
+Upstream `third_party/SEN2SR` is kept 100% untouched; all optimizations live in
+`src/ntro_srm/` and are applied at runtime:
+
+1. **Vectorized Fourier masks** (`models/fourier_filters.py`): the upstream
+   `ideal/butterworth/gaussian/sigmoid` builders loop in Python over every
+   frequency bin; ours use meshgrid arithmetic (identical float32 numerics,
+   ~5x faster on a 512x512 mask) and support rectangular shapes.
+2. **Mask caching + registration**: masks are cached by
+   (method, H, W, cutoff, hyperparams, device, dtype) with FIFO eviction;
+   upstream plain-tensor `low_pass_mask` attributes are moved to the compute
+   device at init (fixes the MPS mismatch), made contiguous, and paired with a
+   precomputed high-pass complement so no `1 - mask` runs in the hot loop.
+3. **Efficient FFT forward**: `fft2`/`ifft2` with `dim=(-2,-1)` instead of
+   `fftn` + full-tensor `fftshift` (upstream also rolls batch/channel dims,
+   which commutes with the broadcast multiply but wastes time).
+4. **Batched tile inference** (`inference/tiled.py`): spatial tiles are packed
+   to `batch_size` (default 4) per forward with CPU-float32 accumulation to
+   bound VRAM, instead of one tile per forward with a `tqdm` loop.
+5. **Weighted overlap blending**: partition-of-unity `linear` ramps (default),
+   `hann` cosine, or `average` replace hard overlap cropping; windows taper
+   only toward interior neighbours so borders keep weight 1 and
+   `output / weight_sum` normalization is exact.
+6. **Rectangular scenes**: per-axis tile grids give exact coverage with no
+   duplicates and no square-padding to `max(H, W)`; this also fixes upstream
+   axis-swap (`X[:, x-range, y-range]`), square-only output allocation, and
+   LR/HR-unit-mixed border checks. Verified 130x140 -> 520x560.
+7. **Mixed precision**: opt-in `--amp` (CUDA float16 / CPU bfloat16; MPS stays
+   float32 for FFT reliability).
+8. **Memory management**: CPU accumulation, optional end-of-run cache release,
+   `cudnn.benchmark=True` on CUDA for fixed tiles.
+9. **Reproducibility**: `TiledInferenceConfig` + JSON receipt (torch version,
+   git commit, shapes, timing, peak VRAM) via `--receipt` / `save_receipt`.
+
+Measured (CPU, 256x256 sample scene, Lite): legacy 4520 ms -> optimized
+batch=4 linear-blend 2029 ms (**2.23x**); legacy-vs-optimized mean abs diff
+3.6e-04 concentrated at overlap seams (the seam fix). Apple MPS measured
+809 ms -> 352 ms (**2.30x**). See `benchmarks/inference_cpu.md`,
+`benchmarks/inference_mps.md`, and `scripts/benchmark_inference.py`
+(`--legacy-tiling` reproduces the upstream path for ablations).
+
 ## Current implementation
 
 The operational baseline currently provides:
@@ -18,6 +60,10 @@ The operational baseline currently provides:
 5. A ten-band 2.5 m GeoTIFF with preserved geographic extent.
 6. Reference-based and source-consistency evaluation with a JSON audit report.
 7. A differentiable spectral/spatial objective for the paired-data fine-tuning phase.
+8. Wald synthesis validation against a bicubic baseline.
+9. Novelty and test-time-augmentation uncertainty estimation.
+10. Ten thematic indices for crop, water, urban, moisture, and burn analysis.
+11. A 93-pair geographically split dataset manifest covering twelve sites.
 
 The pretrained weights provide the baseline. The team-owned technical work is
 the multispectral ingestion, geospatial delivery, evaluation framework, and the
@@ -54,6 +100,8 @@ L = wpixel * Lcharbonnier(P, T)
 - The pixel term reconstructs observed HR reflectance and is robust to outliers.
 - The spectral term preserves the direction of each multispectral pixel vector.
 - The gradient term rewards agreement at spatial boundaries.
+- The paired-reference terms use each sample's supervision mask, so a real RGB/NIR
+  reference cannot train red-edge or SWIR bands it did not measure.
 - The source term prevents high-frequency reconstruction from changing the
   observed 10 m signal when the output is aggregated back to the sensor grid.
 - The range term penalizes reflectance outside the configured physical interval.
@@ -80,13 +128,82 @@ train, validation, and test separation is required to avoid leakage.
 
 ## Next model milestone
 
-1. Build a versioned manifest of temporally matched Sentinel-2/HR scene pairs.
-2. Record cloud cover, acquisition-time difference, CRS, alignment error, and split.
-3. Fine-tune one baseline backbone using `SpectralSpatialLoss`.
+1. ~~Connect `PairedS2Dataset` and `SpectralSpatialLoss` in a trainer~~ DONE:
+   `src/ntro_srm/training/trainer.py` + `scripts/finetune_lite.py`. Full-scene
+   real RGBN pairs are auto-tiled to 32px (`_tile_grid`), with in-memory scene
+   caching, train-only flip/rot90 augmentation, cosine schedule, configurable
+   loss weights, and real-only val tracking.
+   Fixed en route: NAIP radiometry (DNB 0-255 was ÷10000 → 14x too dark; now
+   per-band mean/std matched to the LR tile), pair-type filter, resume-LR.
+2. ~~Smoke-train SEN2SR-Lite and verify checkpoint save/resume~~ DONE on
+   Apple MPS: smoke `val 0.0259 -> 0.0240`, resume continues `-> 0.0236`.
+   Shipped `outputs/finetune/lite_ft_best.pt` (Wald 5ep @1e-4, then mixed
+   8ep @5e-5 cosine, grad 0.4, augment; 161 train / 84 val tiles).
+   Held-out Wald TEST (27 tiles, unseen geography), identical metric:
+   pixel 0.01423->0.01321, spectral 0.00858->0.00677 (-21%),
+   gradient 0.02196->0.02130, source 0.00655->0.00394 (-40%).
+   Sample scene consistency RMSE 0.01234->0.01000. See `tests/test_trainer.py`
+   and `scripts/compare_ft.py`.
+   A hotter 12ep @2e-4 continuation degraded
+   val (2 real training scenes memorize) and was discarded.
+3. Fine-tune the baseline on Wald pairs, then the available real RGB/NIR pairs.
 4. Compare bicubic, the untouched pretrained checkpoint, and the fine-tuned checkpoint.
 5. Run an ablation that removes each loss term in turn.
 6. Validate one downstream task, such as field-boundary extraction or flood mapping.
-7. Add checkpoint-ensemble or Monte Carlo uncertainty after accuracy is established.
+7. Expand the real paired set and quantify temporal and alignment error.
+
+## Multi-temporal fusion milestone (large-gain track, DONE 2026-09-07)
+
+Single-image 4x SR is information-capped (Swin2SR ties Lite), so new
+information comes from time. `scripts/fetch_temporal.py` fetches K
+co-registered low-cloud dates per site onto the reference grid (same-tile S2
+aligns natively; ±3px phase refine + 45-day window guard).
+`src/ntro_srm/training/temporal.py` builds K-frame Wald samples; naive K-mean
+does NOT beat K=1 on changed scenes. `src/ntro_srm/training/fusion.py`
+learns per-pixel frame attention over a frozen FT backbone (~10k params,
+cached SR frames). Held-out results, identical metric:
+
+| split | K=1 pixel | fused pixel | spectral | source |
+|---|---|---|---|---|
+| val (Bengaluru) | 0.02078 | **0.01903 (-8%)** | -15% | -29% |
+| test (Delhi) | 0.01636 | **0.01498 (-8%)** | -16% | -32% |
+
+Demo: `scripts/demo_temporal.py --site IND_DELHI_URBAN` (triptych +
+amplified fused-vs-single heatmap in `outputs/comparisons/`).
+
+## Distillation milestone (Swin2SR -> Lite, DONE 2026-09-07)
+
+Wald/NAIP fine-tuning moved Lite by mean |FT-base| ~0.003 reflectance
+(visually negligible), while the Swin2SR teacher disagrees with Lite by mean
+|Swin-Lite| ~0.08 (p99 ~0.3) at edges. Distillation transfers that edge
+reconstruction into a Lite-speed student (~2s inference, same deployment).
+
+- Teacher cache: `scripts/cache_teacher.py` rendered 80 native 128px LR tiles
+  (62 train / 18 val across 9 sites; test sites IND_ASSAM_FLOOD,
+  IND_DELHI_URBAN, IND_MUMBAI_COAST never distilled) to 512px pseudo-targets
+  (`datasets/distill_cache/`, git-ignored, reproducible, ~55 min on MPS).
+- Student: `src/ntro_srm/training/distill.py` + `scripts/distill_lite.py`,
+  init from `lite_ft_best.pt`, edge-weighted loss
+  (pixel 1.0 / spectral 0.10 / gradient 0.60 / source 0.30 / range 0.05),
+  Adam 3e-5 cosine, augment. Continuation v2 @2e-5 x10ep.
+  Shipped `outputs/finetune/lite_distill_best.pt` (= v2 best).
+  Val vs teacher: 0.01295 -> 0.01161 (run 1) -> 0.01117 (v2), monotonic.
+- Held-out generalization (IND_DELHI_URBAN test chip): distilled Lite is
+  closest to the Swin teacher in pixel AND gradient fidelity on both test
+  tiles (beats base and FT; FT is farther from the teacher than base -
+  Wald training smooths toward the proxy). Source-consistency RMSE beats base
+  on both scenes (Mountain Lake 0.01138 vs 0.01234; Delhi 0.01874 vs 0.02058).
+- Honest limits: teacher targets are pseudo-targets, not ground truth, so
+  teacher bias can transfer; full-scene RGB differences remain subtle
+  (Delhi distill-vs-base mean 0.0031, p99 0.0168, concentrated at edges and
+  red-edge/SWIR fusion bands); raw gradient energy ranks base > distill > FT,
+  i.e. the gain is better-placed edges + radiometry, not global "sharpness".
+  Visuals: `outputs/comparisons/distill_delhi_{rgb_3way,zoom_3way}.png`
+  ([base | FT | distill], zoom centred on peak-diff edge).
+- Serving: `find_ft_checkpoint` prefers `lite_distill_best.pt`; `lite-ft`
+  (Web/CLI/REST) and `scripts/compare_ft.py` pick it up with no flag changes.
+  Tests: `tests/test_distill.py`
+  (3 tests, CPU, synthetic cache).
 
 ## Claims and limitations
 

@@ -11,7 +11,7 @@ This document provides complete instructions for installing and configuring the 
 | :--- | :--- | :--- |
 | **Processor** | 4-Core x86_64 / ARM64 CPU | 8-Core Intel Core i5/i7 or AMD Ryzen |
 | **RAM** | 8 GB System Memory | 16 GB+ System Memory |
-| **GPU** | CPU execution supported | **NVIDIA GeForce RTX 3050 6GB** or higher with CUDA 11.8–13.x |
+| **GPU** | CPU execution supported | NVIDIA GPU with CUDA or Apple Silicon GPU with MPS |
 | **VRAM** | N/A (CPU mode) | 4 GB+ for SEN2SR-Lite; **6 GB+ for SEN2SR-Swin2SR** |
 | **Disk Space** | 3 GB free disk space | 8 GB free disk space (for venv, caches, and models) |
 
@@ -20,7 +20,7 @@ This document provides complete instructions for installing and configuring the 
 - **Operating System:**
   - **Linux:** Ubuntu 20.04+, Debian 11+, Fedora 38+, Arch Linux
   - **Windows:** Windows 10 / 11 via **WSL2** (Ubuntu recommended for full CUDA support)
-  - **macOS:** macOS Monterey+ (Apple Silicon supported via CPU fallback)
+  - **macOS:** macOS Monterey+ (Apple Silicon GPU acceleration through PyTorch MPS)
 - **Git:** Version 2.25+
 
 ---
@@ -82,13 +82,19 @@ venv\Scripts\Activate.ps1
 pip install --upgrade pip setuptools wheel
 ```
 
-### Step 4: Install PyTorch with CUDA (or CPU)
+### Step 4: Install PyTorch for CUDA, Apple MPS, or CPU
 Depending on your hardware:
 
 - **CUDA 12.x / 13.x (NVIDIA GPU - Recommended):**
   ```bash
   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
   ```
+- **Apple Silicon (MPS):**
+  ```bash
+  pip install torch torchvision
+  ```
+  The standard macOS wheels include the MPS backend. NTRO-SRM selects it
+  automatically when `torch.backends.mps.is_available()` is true.
 - **CPU-Only (No NVIDIA GPU):**
   ```bash
   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu

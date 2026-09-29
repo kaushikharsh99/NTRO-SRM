@@ -1,7 +1,7 @@
 # NTRO-SRM: Deep Learning Based Super-Resolution Mapping Framework
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg)](https://www.python.org/)
-[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x%20CUDA-ee4c2c.svg)](https://pytorch.org/)
+[![PyTorch 2.x](https://img.shields.io/badge/PyTorch-2.x%20CUDA%20%7C%20MPS-ee4c2c.svg)](https://pytorch.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-009688.svg)](https://fastapi.tiangolo.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Tests: Passing](https://img.shields.io/badge/Tests-26%2F26%20Passed-brightgreen.svg)](tests/)
@@ -93,19 +93,18 @@ Open **`http://127.0.0.1:8000`** in your browser.
 
 ---
 
-## Model Benchmark & Hardware Profiling
+## Inference Performance
 
-Evaluated on the Mountain Lake Sentinel-2 L2A scene (`datasets/sample_s2/sample_s2_l2a.tif`, $256 \times 256$ pixels at 10m GSD $\to$ $1024 \times 1024$ pixels at 2.5m GSD) on an **NVIDIA GeForce RTX 3050 6GB Laptop GPU**:
+The optimized tiler batches spatial patches, removes duplicate edge tiles, and blends
+overlaps without hard seams. On the bundled $256\times256$ Sentinel-2 scene:
 
-| Metric | SEN2SR-Lite (Default) | SEN2SR-Swin2SR (Higher-Capacity) |
-| :--- | :--- | :--- |
-| **Architecture** | Swift Parameter-free Attention CNN | Swin2SR Vision Transformer + MambaSR |
-| **Parameter Count** | **~0.47 Million** | **~12.9 Million** ($27.4\times$ capacity) |
-| **Input $\to$ Output Grid** | $256\times 256 \to 1024\times 1024$ (16 tiles) | $256\times 256 \to 1024\times 1024$ (16 tiles) |
-| **Spectral Channels** | 10 Bands (`B02`..`B12`) | 10 Bands (`B02`..`B12`) |
-| **Peak GPU VRAM** | **310.4 MB** | **2,461.0 MB** (~2.46 GB) |
-| **Inference Runtime** | **2.25 seconds** | **720.80 seconds** (~12.0 min, pure PyTorch scan) |
-| **Target Application** | Fast screening, interactive web panning | Complex infrastructure, dense edge reconstruction |
+| Device | Legacy path | Optimized batch=4 | Speedup |
+| :--- | ---: | ---: | ---: |
+| Apple GPU (MPS) | 808.6 ms | 351.5 ms | **2.30×** |
+| CPU | 4519.9 ms | 2029.4 ms | **2.23×** |
+
+See [MPS](benchmarks/inference_mps.md) and [CPU](benchmarks/inference_cpu.md)
+benchmark receipts. Use `--legacy-tiling` for the upstream ablation path.
 
 ---
 
@@ -130,12 +129,15 @@ Comparison generated from the Mountain Lake Sentinel-2 test scene:
 ## Usage Guide
 
 For complete, detailed instructions, see:
-- 📖 **[INSTALL.md](INSTALL.md):** Complete installation guide for Linux, Windows (WSL2), macOS, and CUDA configuration.
+- 📖 **[INSTALL.md](INSTALL.md):** Complete installation guide for Linux, Windows (WSL2), macOS, CUDA, and Apple MPS.
 - 📖 **[USAGE.md](USAGE.md):** Comprehensive guide covering the Web UI, CLI flags, and Python SDK.
 
 ### Command-Line Interface (CLI)
 
 Run super-resolution directly on any multi-band GeoTIFF:
+
+The device is selected automatically in the order CUDA, Apple MPS, then CPU.
+Pass `--device` only when you need to override that choice.
 
 ```bash
 source venv/bin/activate
@@ -144,8 +146,7 @@ source venv/bin/activate
 python scripts/sr_sentinel2.py \
   --input datasets/sample_s2/sample_s2_l2a.tif \
   --output outputs/sr_lite_2.5m.tif \
-  --model lite \
-  --device cuda
+  --model lite
 
 # High-Quality Vision Transformer (SEN2SR-Swin2SR)
 python scripts/sr_sentinel2.py \
@@ -161,7 +162,7 @@ python scripts/sr_sentinel2.py \
 from pathlib import Path
 from ntro_srm.inference.sentinel2_pipeline import Sentinel2SRPipeline
 
-pipeline = Sentinel2SRPipeline(model_variant="lite", device="cuda")
+pipeline = Sentinel2SRPipeline(model_variant="lite", device=None)
 
 result = pipeline.predict(
     input_path=Path("datasets/sample_s2/sample_s2_l2a.tif"),
@@ -191,6 +192,11 @@ separately from reference accuracy: agreement after downsampling to 10 m does
 not prove that reconstructed 2.5 m details are correct. See
 **[EVALUATION.md](EVALUATION.md)** for metric definitions and usage.
 
+Completed web jobs also expose radiometric consistency, a novelty-based
+confidence surface, ten crop/water/urban/burn indices, and downloadable JSON and
+Markdown QA reports. Wald validation and multi-pass uncertainty are available as
+explicit options because they require additional model inference.
+
 For paired-data fine-tuning, `SpectralSpatialLoss` combines robust pixel
 reconstruction, spectral-vector agreement, spatial-gradient preservation,
 low-resolution observation consistency, and physical reflectance constraints.
@@ -209,10 +215,12 @@ NTRO-SRM/
 │   ├── cache/                # Cached streaming tiles from STAC
 │   └── sample_s2/            # Pre-downloaded sample Sentinel-2 scene (455 KB)
 ├── outputs/
-│   ├── comparisons/          # Benchmark visual comparisons and triptychs
+│   ├── comparisons/          # Visual comparison previews
 │   └── web_jobs/             # Asynchronous web job outputs & GeoTIFFs
 ├── scripts/
-│   ├── compare_models.py     # Evaluation & triptych generator
+│   ├── benchmark_inference.py # Legacy versus optimized tiling benchmark
+│   ├── compare_ft.py         # Lite versus project-tuned comparison
+│   ├── compare_models.py     # Baseline model visual comparison
 │   ├── download_checkpoints.py # Pretrained weights downloader
 │   ├── run_web.py            # Web application launcher
 │   └── sr_sentinel2.py       # Command-line interface (CLI)

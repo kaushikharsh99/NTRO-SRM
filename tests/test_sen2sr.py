@@ -14,6 +14,7 @@ from ntro_srm.preprocessing.transforms import (
     rgbn_to_s2_10band,
     s2_10band_to_rgbn,
 )
+from ntro_srm.utils.device import mps_available
 
 
 @pytest.fixture(scope="module")
@@ -168,3 +169,61 @@ class TestSEN2SRAdapter:
             sen2sr_model.set_trainable(False)
         assert sen2sr_model.model.training is False
         assert not any(parameter.requires_grad for parameter in sen2sr_model.model.parameters())
+
+    def test_optimizer_created_before_fine_tuning_updates_backbone(self, monkeypatch):
+        class TinyBackbone(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.projection = torch.nn.Conv2d(10, 10, kernel_size=1)
+                self.refreshed = False
+
+            def forward(self, value: torch.Tensor) -> torch.Tensor:
+                result = self.projection(value)
+                if not self.refreshed:
+                    self.projection.weight.data = self.projection.weight.detach().clone()
+                    self.refreshed = True
+                return result
+
+        with torch.inference_mode():
+            backbone = TinyBackbone()
+        monkeypatch.setattr(SEN2SRModel, "_load_model", lambda self, auto_download: backbone)
+        model = SEN2SRModel(device="cpu", auto_download=False)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        optimizer_parameter = optimizer.param_groups[0]["params"][0]
+
+        model.predict(torch.ones(1, 10, 4, 4), auto_normalize=False)
+        assert optimizer_parameter.is_inference()
+        model.set_trainable(True)
+        backbone_parameter = next(model.model.parameters())
+        assert optimizer_parameter is backbone_parameter
+        assert not backbone_parameter.is_inference()
+        before = backbone_parameter.detach().clone()
+
+        optimizer.zero_grad()
+        model(torch.ones(1, 10, 4, 4)).square().mean().backward()
+        optimizer.step()
+
+        assert not torch.equal(before, backbone_parameter.detach())
+
+    @pytest.mark.skipif(not mps_available(), reason="Apple MPS is unavailable")
+    def test_lite_inference_runs_on_apple_mps(self):
+        checkpoint = Path(__file__).resolve().parents[1] / "checkpoints" / "SEN2SRLite"
+        model = SEN2SRModel(
+            model_variant="lite",
+            device="mps",
+            checkpoint_dir=checkpoint,
+            auto_download=False,
+        )
+
+        masks = [
+            module.low_pass_mask
+            for module in model.model.modules()
+            if isinstance(getattr(module, "low_pass_mask", None), torch.Tensor)
+        ]
+        output = model.predict(torch.rand(1, 10, 16, 16), auto_normalize=False)
+        torch.mps.synchronize()
+
+        assert next(model.model.parameters()).device.type == "mps"
+        assert masks and all(mask.device.type == "mps" for mask in masks)
+        assert output.shape == (1, 10, 64, 64)
+        assert torch.isfinite(output).all()

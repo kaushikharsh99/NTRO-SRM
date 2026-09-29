@@ -16,6 +16,24 @@ def main() -> None:
     parser.add_argument("--source", help="Path to the low-resolution Sentinel-2 source")
     parser.add_argument("--reference", help="Path to a georeferenced high-resolution reference")
     parser.add_argument("--scale-factor", type=float, default=4.0, help="SR scale used by ERGAS")
+    parser.add_argument(
+        "--prediction-scale",
+        type=float,
+        default=1.0,
+        help="Radiometric divisor for prediction values (default: already normalized)",
+    )
+    parser.add_argument(
+        "--source-scale",
+        type=float,
+        default=10000.0,
+        help="Radiometric divisor for source values (default: Sentinel-2 quantification 10000)",
+    )
+    parser.add_argument(
+        "--reference-scale",
+        type=float,
+        default=1.0,
+        help="Radiometric divisor for reference values (for example 255 or 65535)",
+    )
     parser.add_argument("--output", help="Optional path for the JSON report")
     args = parser.parse_args()
 
@@ -24,6 +42,9 @@ def main() -> None:
         source_path=args.source,
         reference_path=args.reference,
         scale_factor=args.scale_factor,
+        prediction_scale=args.prediction_scale,
+        source_scale=args.source_scale,
+        reference_scale=args.reference_scale,
     )
     if args.output:
         report.write_json(args.output)

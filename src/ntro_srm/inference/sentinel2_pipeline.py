@@ -16,6 +16,7 @@ from ntro_srm.models.sen2sr import SEN2SRModel
 from ntro_srm.preprocessing.sentinel2 import NormalizationMode, normalize_sentinel2_l2a
 from ntro_srm.preprocessing.transforms import S2_10BAND_NAMES
 from ntro_srm.utils.geotiff import compute_sr_transform, write_sr_geotiff
+from ntro_srm.utils.device import synchronize_device
 
 
 @dataclass
@@ -48,6 +49,10 @@ class Sentinel2SRResult:
         Elapsed model execution time in milliseconds.
     peak_gpu_memory_mb : float or None
         Peak GPU VRAM allocated during inference if running on CUDA.
+    inference_config : dict or None
+        Reproducible tiling/blending/AMP configuration used for this run.
+    receipt_path : Path or None
+        JSON reproducibility receipt written alongside the GeoTIFF, if requested.
     """
 
     sr_tensor: torch.Tensor
@@ -62,6 +67,8 @@ class Sentinel2SRResult:
     band_names: list[str]
     inference_time_ms: float
     peak_gpu_memory_mb: Optional[float] = None
+    inference_config: Optional[dict] = None
+    receipt_path: Optional[Path] = None
 
 
 class Sentinel2SRPipeline:
@@ -80,7 +87,7 @@ class Sentinel2SRPipeline:
         model_variant : str, default="lite"
             Super-resolution model architecture ("lite" is default).
         device : str or torch.device, optional
-            Compute device ("cuda" or "cpu").
+            Compute device ("cuda", "mps", or "cpu").
         checkpoint_dir : str or Path, optional
             Path to pretrained model checkpoint directory.
         """
@@ -98,6 +105,14 @@ class Sentinel2SRPipeline:
         output_path: Optional[Union[str, Path]] = None,
         normalization_mode: NormalizationMode = "auto",
         overlap: int = 32,
+        tile_size: int = 128,
+        batch_size: int = 4,
+        blend_mode: str = "linear",
+        use_amp: bool = False,
+        amp_dtype: Optional[str] = None,
+        use_legacy_tiling: bool = False,
+        save_receipt: bool = False,
+        receipt_path: Optional[Union[str, Path]] = None,
     ) -> Sentinel2SRResult:
         """Execute super-resolution on a real Sentinel-2 raster.
 
@@ -110,7 +125,23 @@ class Sentinel2SRPipeline:
         normalization_mode : {"s2_10000", "already_normalized", "auto"}, default="auto"
             Normalization mode applied to raw reflectances.
         overlap : int, default=32
-            Tiling overlap in pixels when processing images larger than 128x128.
+            Tiling overlap in pixels when processing images larger than tile_size.
+        tile_size : int, default=128
+            LR tile edge for tiled inference.
+        batch_size : int, default=4
+            Tiles per forward pass (batched inference).
+        blend_mode : {"linear", "hann", "average"}, default="linear"
+            Overlap blending strategy.
+        use_amp : bool, default=False
+            Enable autocast mixed precision (CUDA/CPU).
+        amp_dtype : str, optional
+            Explicit autocast dtype.
+        use_legacy_tiling : bool, default=False
+            Use the upstream single-tile hard-crop path (ablation only).
+        save_receipt : bool, default=False
+            Write a JSON reproducibility receipt next to the output GeoTIFF.
+        receipt_path : str or Path, optional
+            Explicit receipt destination (defaults to ``<output stem>.receipt.json``).
 
         Returns
         -------
@@ -134,7 +165,7 @@ class Sentinel2SRPipeline:
         is_cuda = self.device.type == "cuda"
         if is_cuda:
             torch.cuda.reset_peak_memory_stats()
-            torch.cuda.synchronize()
+        synchronize_device(self.device)
 
         start_time = time.perf_counter()
         sr_tensor = self.model.predict(
@@ -142,10 +173,16 @@ class Sentinel2SRPipeline:
             auto_normalize=False,  # Already normalized via explicit preprocessing step
             clamp_output=True,
             overlap=overlap,
+            tile_size=tile_size,
+            batch_size=batch_size,
+            blend_mode=blend_mode,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            use_legacy_tiling=use_legacy_tiling,
         )
 
+        synchronize_device(self.device)
         if is_cuda:
-            torch.cuda.synchronize()
             peak_memory_mb = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
         else:
             peak_memory_mb = None
@@ -158,7 +195,13 @@ class Sentinel2SRPipeline:
         # 5. Optionally write to GeoTIFF
         saved_path: Optional[Path] = None
         if output_path is not None:
-            model_label = "SEN2SR-Swin2SR" if self.model.model_variant == "swin2sr" else "SEN2SR-Lite"
+            variant = self.model.model_variant
+            if variant == "swin2sr":
+                model_label = "SEN2SR-Swin2SR"
+            elif variant == "lite-ft":
+                model_label = "SEN2SR-Lite FT"
+            else:
+                model_label = "SEN2SR-Lite"
             saved_path = write_sr_geotiff(
                 output_path=output_path,
                 tensor=sr_tensor,
@@ -169,6 +212,43 @@ class Sentinel2SRPipeline:
                 output_gsd="2.5m",
                 upscale_factor=4,
             )
+
+        # 6. Reproducibility receipt (opt-in; defaults next to the GeoTIFF).
+        receipt_out: Optional[Path] = None
+        if save_receipt or receipt_path is not None:
+            from ntro_srm.inference.tiled import (
+                TiledInferenceConfig,
+                make_inference_receipt,
+                write_inference_receipt,
+            )
+
+            cfg = TiledInferenceConfig(
+                tile_size=int(tile_size),
+                overlap=int(overlap),
+                batch_size=int(batch_size),
+                blend_mode=str(blend_mode),
+                scale_factor=4,
+                use_amp=bool(use_amp),
+                amp_dtype=amp_dtype,
+            )
+            receipt = make_inference_receipt(
+                cfg,
+                model_variant=self.model.model_variant,
+                device=self.device,
+                input_shape=tuple(normalized_tensor.shape),
+                output_shape=tuple(sr_tensor.shape),
+                inference_time_ms=elapsed_ms,
+                peak_gpu_memory_mb=peak_memory_mb,
+                extra={"normalization_mode": str(normalization_mode)},
+                workspace_root=Path(__file__).resolve().parents[3],
+            )
+            if receipt_path is not None:
+                dest = Path(receipt_path)
+            elif saved_path is not None:
+                dest = saved_path.with_name(saved_path.stem + ".receipt.json")
+            else:
+                dest = Path(input_path).with_name(Path(input_path).stem + ".receipt.json")
+            receipt_out = write_inference_receipt(receipt, dest)
 
         return Sentinel2SRResult(
             sr_tensor=sr_tensor,
@@ -183,4 +263,17 @@ class Sentinel2SRPipeline:
             band_names=S2_10BAND_NAMES,
             inference_time_ms=elapsed_ms,
             peak_gpu_memory_mb=peak_memory_mb,
+            inference_config={
+                "tile_size": int(tile_size),
+                "overlap": int(overlap),
+                "batch_size": int(batch_size),
+                "blend_mode": str(blend_mode),
+                "scale_factor": 4,
+                "use_amp": bool(use_amp),
+                "amp_dtype": amp_dtype,
+                "use_legacy_tiling": bool(use_legacy_tiling),
+                "model_variant": self.model.model_variant,
+                "device": str(self.device),
+            },
+            receipt_path=receipt_out,
         )

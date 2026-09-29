@@ -1,0 +1,29 @@
+# SIH26142 dataset build configuration
+root: datasets/paired
+manifest: datasets/paired/manifest.csv
+wald:
+  scale: 4
+  tile_lr: 32        # 32x32 @40m -> 128x128 @10m HR target
+  stride_lr: 24
+  kernel_size: 5
+  sigma: 1.0
+  nodata_fraction_max: 0.05
+indian_priority_sites:
+  - IND_PUNJAB_AGRI
+  - IND_DELHI_URBAN
+  - IND_MUMBAI_COAST
+  - IND_ASSAM_FLOOD
+  - IND_BENGALURU_LAKE
+  - IND_JAIPUR_SEMIARID
+earth_search:
+  date_from: "2023-01-01"
+  date_to: "2025-12-31"
+  max_cloud_cover: 10.0
+  limit: 5
+  timeout_s: 25
+real_hr:
+  # Planetary Computer NAIP for US sites (open, no key for STAC search)
+  pc_stac: "https://planetarycomputer.microsoft.com/api/stac/v1"
+  dt_days_max: 120
+  target_gsd_m: 2.5
+  common_bands: "B02,B03,B04,B08"

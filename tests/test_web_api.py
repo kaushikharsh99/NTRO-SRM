@@ -25,13 +25,18 @@ class TestWebAPI:
         assert resp.status_code == 200
         data = resp.json()
         assert "cuda_available" in data
+        assert "mps_available" in data
+        assert "accelerator_available" in data
+        assert "accelerator_active" in data
+        assert data["device_type"] == "cpu"
         assert "device_name" in data
         assert data["model_variant"] == "SEN2SR-Lite"
         assert "models_available" in data
-        assert len(data["models_available"]) == 2
+        assert len(data["models_available"]) == 3
         model_ids = [m["id"] for m in data["models_available"]]
         assert "lite" in model_ids
         assert "swin2sr" in model_ids
+        assert "lite-ft" in model_ids
         assert data["upscale_factor"] == 4
         assert data["max_aoi_pixels"] == 512 * 512
 
@@ -150,7 +155,37 @@ class TestWebAPI:
         assert resp.status_code == 200
         assert "NTRO-SRM" in resp.text
         assert "SEN2SR-Lite" in resp.text
+        assert "SEN2SR-Lite FT" in resp.text
+        assert "Previous run" in resp.text
+        assert "Compare Lite vs FT" in resp.text
+        assert "btn-toggle-diff" in resp.text
+        assert "validation-dock" in resp.text
+        assert "Wald · 40 m → 10 m" in resp.text
+        assert "pixel-inspector" in resp.text
+        assert "btn-download-report" in resp.text
         assert "leaflet.js" in resp.text
+
+    def test_model_variant_normalization(self):
+        from ntro_srm.web.services.sr_service import normalize_variant
+
+        assert normalize_variant("swin") == "swin2sr"
+        assert normalize_variant("Swin2SR") == "swin2sr"
+        assert normalize_variant("lite") == "lite"
+        assert normalize_variant("lite-ft") == "lite-ft"
+        assert normalize_variant("LITE_FT") == "lite-ft"
+        assert normalize_variant(None) == "lite"
+        assert normalize_variant("unknown-xyz") == "lite"
+
+    def test_lite_ft_pipeline_loads_finetuned_weights(self):
+        from ntro_srm.web.services.sr_service import SRService, find_lite_ft_checkpoint
+
+        project_root = Path(__file__).resolve().parents[1]
+        if find_lite_ft_checkpoint(project_root) is None:
+            pytest.skip("fine-tuned Lite checkpoint not built yet")
+        service = SRService(workspace_root=project_root, device="cpu")
+        pipeline = service.get_pipeline("lite-ft")
+        assert pipeline.model.model_variant == "lite-ft"
+        assert service.get_pipeline("LITE-FT") is pipeline
 
     def test_cdse_provider_authentication_and_search(self):
         from ntro_srm.web.services.sentinel_service import CopernicusCDSEProvider
@@ -170,4 +205,3 @@ class TestWebAPI:
         res = provider.search(search_req)
         assert res.total >= 1
         assert res.scenes[0].provider == "Copernicus Data Space (CDSE)"
-
